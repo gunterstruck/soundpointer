@@ -91,6 +91,8 @@ function normalize3(v) {
   return [v[0] / len, v[1] / len, v[2] / len];
 }
 
+function sub3(a, b) { return [a[0] - b[0], a[1] - b[1], a[2] - b[2]]; }
+
 /* ============================================================= *
  *  Geräteorientierung -> Quaternion (Kamera-Blickrichtung)
  * ============================================================= */
@@ -108,6 +110,16 @@ function deviceQuaternion(alpha, beta, gamma, screenAngle) {
   // Bildschirmrotation (Hoch-/Querformat) kompensieren – Drehung um Z (Welt-Up nach q1)
   q = Quat.multiply(q, Quat.fromAxisAngle(0, 0, 1, -screenAngle * DEG));
   return q;
+}
+
+/**
+ * Reine Geräte-zu-Welt-Orientierung (OHNE Kamera-/Bildschirm-Korrektur).
+ * Bildet einen Vektor in Geräteachsen (x = rechts, y = oben, z = aus dem
+ * Display heraus) in dieselben Weltkoordinaten ab wie oben. Wird benötigt,
+ * um die Beschleunigung (Geräteachsen) in die Welt zu drehen.
+ */
+function deviceWorldQuaternion(alpha, beta, gamma) {
+  return Quat.fromEulerYXZ(beta * DEG, alpha * DEG, -gamma * DEG);
 }
 
 /* ============================================================= *
@@ -186,8 +198,16 @@ const state = {
   hasOrientation: false,
   isAbsolute: false,
   source: '–',
-  quat: Quat.identity(),
-  markers: [],   // { id, azimuth, elevation, timestamp, el(DOM) }
+  quat: Quat.identity(),       // Kamera -> Welt (für die Darstellung)
+  devQuat: Quat.identity(),    // Gerät  -> Welt (für die Beschleunigung)
+  // Experimentelles 6DoF: Position des Handys relativ zum Startpunkt (Kugelmittelpunkt),
+  // durch doppelte Integration der Beschleunigung. WARNUNG: driftet (siehe Debug).
+  position: [0, 0, 0],         // Meter
+  velocity: [0, 0, 0],         // m/s
+  hasMotion: false,
+  motionSupported: false,
+  lastMotionT: 0,
+  markers: [],   // { id, pos:[x,y,z], azimuth, elevation, timestamp, el(DOM) }
   nextId: 1,
   showDebug: true,
   running: false,
@@ -195,6 +215,12 @@ const state = {
   absoluteSupported: false,
   stream: null,
 };
+
+/* --- Parameter für das Positions-Experiment (zum Tunen) --- */
+const MARKER_RADIUS = 2.0;   // angenommene Entfernung des Markers (Meter)
+const ACC_DEADZONE = 0.05;   // Beschleunigung darunter wird als 0 gewertet (m/s²) – dämpft Rauschen
+const VEL_DAMPING = 1.0;     // 1.0 = aus; <1 bremst Geschwindigkeit (gegen Weglaufen)
+const MAX_DT = 0.05;         // max. Zeitschritt pro Sample (s), gegen Sprünge
 
 /* ============================================================= *
  *  Kamera
@@ -254,7 +280,43 @@ function onOrientation(ev, absolute) {
   }
 
   state.quat = deviceQuaternion(state.alpha, state.beta, state.gamma, state.screenAngle);
+  state.devQuat = deviceWorldQuaternion(state.alpha, state.beta, state.gamma);
   state.hasOrientation = true;
+}
+
+// Beschleunigung -> Position (experimentelles 6DoF, doppelte Integration).
+function onMotion(ev) {
+  const acc = ev.acceleration; // ohne Schwerkraft
+  if (!acc || (acc.x == null && acc.y == null && acc.z == null)) return;
+  state.motionSupported = true;
+  state.hasMotion = true;
+
+  const now = performance.now();
+  let dt = state.lastMotionT ? (now - state.lastMotionT) / 1000 : 0;
+  state.lastMotionT = now;
+  if (dt <= 0) return;
+  if (dt > MAX_DT) dt = MAX_DT;
+
+  // Geräteachsen-Beschleunigung mit Totzone (Rauschunterdrückung).
+  const dz = (v) => (Math.abs(v) < ACC_DEADZONE ? 0 : v);
+  const aDev = [dz(acc.x || 0), dz(acc.y || 0), dz(acc.z || 0)];
+
+  // In Weltkoordinaten drehen und doppelt integrieren.
+  const aW = Quat.rotateVec(state.devQuat, aDev);
+  for (let i = 0; i < 3; i++) {
+    state.position[i] += state.velocity[i] * dt + 0.5 * aW[i] * dt * dt;
+    state.velocity[i] = (state.velocity[i] + aW[i] * dt) * VEL_DAMPING;
+  }
+}
+
+// Position & Geschwindigkeit auf 0 setzen ("Kugel" neu auf das Handy zentrieren).
+// Marker behalten ihre relative Lage, indem sie um die alte Position verschoben werden.
+function recenter() {
+  const p = state.position;
+  for (const m of state.markers) m.pos = sub3(m.pos, p);
+  state.position = [0, 0, 0];
+  state.velocity = [0, 0, 0];
+  setStatus('Neu zentriert · Position auf 0 zurückgesetzt.');
 }
 
 async function initSensors() {
@@ -267,13 +329,17 @@ async function initSensors() {
   }
   window.addEventListener('orientationchange', updateScreenAngle);
 
-  // iOS 13+ verlangt explizite Freigabe.
+  // iOS 13+ verlangt explizite Freigabe – für Orientierung UND Bewegung.
   const DOE = window.DeviceOrientationEvent;
   if (DOE && typeof DOE.requestPermission === 'function') {
     const res = await DOE.requestPermission();
     if (res !== 'granted') {
       throw new Error('Zugriff auf Bewegungssensoren verweigert.');
     }
+  }
+  const DME = window.DeviceMotionEvent;
+  if (DME && typeof DME.requestPermission === 'function') {
+    try { await DME.requestPermission(); } catch (e) { /* optional */ }
   }
 
   // Absolute Orientierung bevorzugen, falls verfügbar.
@@ -282,6 +348,11 @@ async function initSensors() {
     window.addEventListener('deviceorientationabsolute', (e) => onOrientation(e, true));
   }
   window.addEventListener('deviceorientation', (e) => onOrientation(e, false));
+
+  // Bewegung (Beschleunigung) für das Positions-Experiment.
+  if (window.DeviceMotionEvent) {
+    window.addEventListener('devicemotion', onMotion);
+  }
 
   state.sensorsInitialized = true;
   return state.absoluteSupported;
@@ -297,8 +368,15 @@ function placeMarker(px, py) {
   const camRay = screenToCameraRay(px, py);
   // 2) Strahl -> Weltrichtung über aktuelles Quaternion
   const worldDir = Quat.rotateVec(state.quat, camRay);
-  // 3) Weltrichtung -> Azimut / Elevation (das wird gespeichert!)
+  // 3) Richtung für die Debug-Anzeige
   const { azimuth, elevation } = vectorToSpherical(worldDir);
+  // 4) 3D-Weltposition des Markers: aktuelle Handy-Position + Radius * Richtung.
+  //    Dadurch bleibt der Punkt im Raum stehen und zeigt Parallaxe bei Bewegung.
+  const pos = [
+    state.position[0] + MARKER_RADIUS * worldDir[0],
+    state.position[1] + MARKER_RADIUS * worldDir[1],
+    state.position[2] + MARKER_RADIUS * worldDir[2],
+  ];
 
   const el = document.createElement('div');
   el.className = 'marker';
@@ -306,6 +384,7 @@ function placeMarker(px, py) {
 
   state.markers.push({
     id: state.nextId++,
+    pos,
     azimuth,
     elevation,
     timestamp: Date.now(),
@@ -329,8 +408,9 @@ function render() {
   const invQ = Quat.conjugate(state.quat); // Welt -> Kamera
 
   for (const m of state.markers) {
-    const worldDir = sphericalToVector(m.azimuth, m.elevation);
-    const camDir = Quat.rotateVec(invQ, worldDir);
+    // Richtung vom aktuellen Standort zum Marker (3D) -> Parallaxe bei Bewegung.
+    const rel = sub3(m.pos, state.position);
+    const camDir = Quat.rotateVec(invQ, rel);
     const proj = cameraRayToScreen(camDir);
 
     if (!proj) {
@@ -354,7 +434,7 @@ function render() {
 
 const dbg = {};
 function cacheDom() {
-  ['source', 'azimuth', 'pitch', 'roll', 'count'].forEach((k) => {
+  ['source', 'azimuth', 'pitch', 'roll', 'pos', 'dist', 'count'].forEach((k) => {
     dbg[k] = document.getElementById('dbg-' + k);
   });
 }
@@ -368,6 +448,17 @@ function updateDebug() {
   dbg.azimuth.textContent = state.hasOrientation ? azimuth.toFixed(1) + '°' : '–';
   dbg.pitch.textContent = state.hasOrientation ? state.beta.toFixed(1) + '°' : '–';
   dbg.roll.textContent = state.hasOrientation ? state.gamma.toFixed(1) + '°' : '–';
+
+  // Positions-Experiment: Versatz vom Startpunkt (in cm) + Gesamtdistanz.
+  const p = state.position;
+  if (state.hasMotion) {
+    const cm = (v) => (v * 100).toFixed(0);
+    dbg.pos.textContent = `${cm(p[0])},${cm(p[1])},${cm(p[2])}`;
+    dbg.dist.textContent = (Math.hypot(p[0], p[1], p[2]) * 100).toFixed(0) + ' cm';
+  } else {
+    dbg.pos.textContent = state.motionSupported ? '0,0,0' : 'n/a';
+    dbg.dist.textContent = state.motionSupported ? '0 cm' : 'n/a';
+  }
   dbg.count.textContent = String(state.markers.length);
 }
 
@@ -404,6 +495,11 @@ async function start() {
     await startCamera(video);
     const absolute = await initSensors();
 
+    // Kugel frisch auf das Handy zentrieren (Startpunkt = Position 0).
+    state.position = [0, 0, 0];
+    state.velocity = [0, 0, 0];
+    state.lastMotionT = 0;
+
     gate.classList.add('hidden');
     setStatus(absolute
       ? 'Bereit · absolute Orientierung verfügbar. Tippe zum Markieren.'
@@ -435,6 +531,7 @@ function init() {
 
   document.getElementById('btn-start').addEventListener('click', start);
   document.getElementById('btn-stop').addEventListener('click', stop);
+  document.getElementById('btn-center').addEventListener('click', recenter);
   document.getElementById('btn-clear').addEventListener('click', clearMarkers);
 
   const btnDebug = document.getElementById('btn-debug');
