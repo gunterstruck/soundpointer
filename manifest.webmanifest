@@ -1,0 +1,20 @@
+{
+  "name": "SoundPointer",
+  "short_name": "SoundPointer",
+  "description": "Sensorstabile AR-Markierung – räumliche Orientierung als Grundlage für akustische Lokalisierung.",
+  "lang": "de",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "fullscreen",
+  "orientation": "any",
+  "background_color": "#000000",
+  "theme_color": "#000000",
+  "icons": [
+    {
+      "src": "icons/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

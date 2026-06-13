@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <meta name="theme-color" content="#000000" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <title>SoundPointer · Milestone 1</title>
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="icons/icon.svg" />
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <!-- Kamerabild (Hintergrund) -->
+  <video id="camera" playsinline autoplay muted></video>
+
+  <!-- Overlay-Layer über dem Kamerabild -->
+  <div id="overlay">
+    <!-- Marker werden hier dynamisch eingefügt -->
+    <div id="markers"></div>
+
+    <!-- Optionales Fadenkreuz in der Bildschirmmitte -->
+    <div id="crosshair" aria-hidden="true">
+      <div class="ch-h"></div>
+      <div class="ch-v"></div>
+      <div class="ch-dot"></div>
+    </div>
+
+    <!-- Debug-Anzeige -->
+    <div id="debug">
+      <div class="row"><span>Quelle</span><b id="dbg-source">–</b></div>
+      <div class="row"><span>Azimut</span><b id="dbg-azimuth">–</b></div>
+      <div class="row"><span>Pitch</span><b id="dbg-pitch">–</b></div>
+      <div class="row"><span>Roll</span><b id="dbg-roll">–</b></div>
+      <div class="row"><span>Marker</span><b id="dbg-count">0</b></div>
+    </div>
+
+    <!-- Bedienleiste -->
+    <div id="controls">
+      <button id="btn-clear" type="button">Marker löschen</button>
+      <button id="btn-debug" type="button">Debug aus</button>
+    </div>
+
+    <!-- Hinweis / Statusmeldung -->
+    <div id="status">Tippe, um die Sensoren &amp; Kamera zu starten.</div>
+  </div>
+
+  <!-- Start-Overlay (für iOS Sensor-/Kamerafreigabe nötig) -->
+  <div id="gate">
+    <div class="gate-card">
+      <h1>SoundPointer</h1>
+      <p class="sub">Milestone 1 · Sensorstabile AR-Markierung</p>
+      <p>Diese App nutzt Kamera und Bewegungssensoren, um Markierungen als
+         Raumrichtung zu speichern. Tippe auf das Kamerabild, um einen grünen
+         Punkt zu setzen – dreh dich weg und wieder zurück, der Punkt bleibt
+         an seiner realen Position.</p>
+      <button id="btn-start" type="button">Starten</button>
+      <p id="gate-error" class="err"></p>
+    </div>
+  </div>
+
+  <script src="js/app.js"></script>
+</body>
+</html>
