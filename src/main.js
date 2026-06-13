@@ -225,7 +225,8 @@ const state = {
 
 /* --- Parameter für das Positions-Experiment (zum Tunen) --- */
 const MARKER_RADIUS = 2.0;   // angenommene Entfernung des Markers (Meter)
-const ACC_DEADZONE = 0.05;   // Beschleunigung darunter wird als 0 gewertet (m/s²) – dämpft Rauschen
+const ACC_DEADZONE = 0.02;   // Beschleunigung darunter wird als 0 gewertet (m/s²) – klein halten,
+                             // damit langsame/kleine Bewegungen erfasst werden (Kompromiss mit Drift)
 const VEL_DAMPING = 1.0;     // 1.0 = aus; <1 bremst Geschwindigkeit (gegen Weglaufen)
 const MAX_DT = 0.05;         // max. Zeitschritt pro Sample (s), gegen Sprünge
 
@@ -512,7 +513,7 @@ function updateDebug() {
   // Beschleunigungsbetrag + Schwerkraft-Status (zur Überprüfung).
   if (state.motionSupported) {
     const tag = state.gravityFree ? 'g-frei ✓' : 'mit g!';
-    dbg.amag.textContent = state.accMag.toFixed(2) + ' m/s² · ' + tag;
+    dbg.amag.textContent = state.accMag.toFixed(3) + ' m/s² · ' + tag;
   } else {
     dbg.amag.textContent = 'n/a';
   }
@@ -520,9 +521,9 @@ function updateDebug() {
   // Positions-Experiment: Versatz vom Startpunkt (in cm) + Gesamtdistanz.
   const p = state.position;
   if (state.hasMotion) {
-    const cm = (v) => (v * 100).toFixed(0);
+    const cm = (v) => (v * 100).toFixed(1);
     dbg.pos.textContent = `${cm(p[0])},${cm(p[1])},${cm(p[2])}`;
-    dbg.dist.textContent = (Math.hypot(p[0], p[1], p[2]) * 100).toFixed(0) + ' cm';
+    dbg.dist.textContent = (Math.hypot(p[0], p[1], p[2]) * 100).toFixed(1) + ' cm';
   } else {
     dbg.pos.textContent = state.motionSupported ? '0,0,0' : 'n/a';
     dbg.dist.textContent = state.motionSupported ? '0 cm' : 'n/a';
