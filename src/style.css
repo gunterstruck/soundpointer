@@ -111,7 +111,11 @@ html, body {
   left: 50%;
   transform: translateX(-50%);
   display: flex;
-  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  width: max-content;
+  max-width: 96vw;
 }
 #controls button {
   appearance: none;
