@@ -1,0 +1,13 @@
+# Vercel
+.vercel
+
+# Dependencies / Build (für mögliche spätere Ausbaustufen)
+node_modules
+dist
+.cache
+
+# OS / Editor
+.DS_Store
+*.log
+.idea
+.vscode

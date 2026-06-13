@@ -52,6 +52,25 @@ python3 -m http.server 8000
 Auf dem Smartphone die Seite öffnen, **„Starten"** tippen und Kamera- sowie
 Bewegungssensor-Zugriff erlauben (iOS fragt explizit nach).
 
+### Deployment auf Vercel
+
+Die App ist eine rein **statische PWA** (kein Build-Schritt). `vercel.json`
+konfiguriert das Projekt als statisches Hosting („Other") und setzt
+PWA-freundliche Header (Service-Worker-Scope, Manifest-Content-Type,
+`Permissions-Policy` für Kamera/Gyroskop/Beschleunigung/Magnetometer).
+Vercel liefert automatisch HTTPS – Voraussetzung für Kamera- und Sensorzugriff.
+
+**Einrichtung (einmalig, wie beim Schwesterprojekt – Git-Integration):**
+
+1. In Vercel **„Add New… → Project"** und das Repo `gunterstruck/soundpointer`
+   importieren.
+2. **Framework Preset:** `Other` (kein Build nötig). Build/Install/Output bleiben
+   leer – das übernimmt bereits `vercel.json`.
+3. **Production Branch:** `main`. Deployen.
+
+Danach löst jeder Push nach `main` automatisch ein Deployment aus; Pushes auf
+andere Branches/PRs erzeugen Preview-Deployments.
+
 ### Erfolgsdefinition
 
 1. Kamera läuft stabil ✔
