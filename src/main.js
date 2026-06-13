@@ -207,6 +207,11 @@ const state = {
   hasMotion: false,
   motionSupported: false,
   lastMotionT: 0,
+  // Kalibrierung: gemittelter Sensor-Offset (Bias) bei stillem Handy.
+  accBias: [0, 0, 0],
+  calibrating: false,
+  calSamples: [],
+  calEndT: 0,
   markers: [],   // { id, pos:[x,y,z], azimuth, elevation, timestamp, el(DOM) }
   nextId: 1,
   showDebug: true,
@@ -291,15 +296,26 @@ function onMotion(ev) {
   state.motionSupported = true;
   state.hasMotion = true;
 
+  const raw = [acc.x || 0, acc.y || 0, acc.z || 0];
+
+  // Kalibrierung: bei stillem Handy Messwerte sammeln -> Mittelwert = Bias.
+  if (state.calibrating) {
+    state.calSamples.push(raw);
+    state.lastMotionT = performance.now();
+    if (performance.now() >= state.calEndT) finishCalibration();
+    return; // während der Kalibrierung nicht integrieren
+  }
+
   const now = performance.now();
   let dt = state.lastMotionT ? (now - state.lastMotionT) / 1000 : 0;
   state.lastMotionT = now;
   if (dt <= 0) return;
   if (dt > MAX_DT) dt = MAX_DT;
 
-  // Geräteachsen-Beschleunigung mit Totzone (Rauschunterdrückung).
+  // Bias abziehen, dann Totzone (Rauschunterdrückung).
+  const b = state.accBias;
   const dz = (v) => (Math.abs(v) < ACC_DEADZONE ? 0 : v);
-  const aDev = [dz(acc.x || 0), dz(acc.y || 0), dz(acc.z || 0)];
+  const aDev = [dz(raw[0] - b[0]), dz(raw[1] - b[1]), dz(raw[2] - b[2])];
 
   // In Weltkoordinaten drehen und doppelt integrieren.
   const aW = Quat.rotateVec(state.devQuat, aDev);
@@ -307,6 +323,34 @@ function onMotion(ev) {
     state.position[i] += state.velocity[i] * dt + 0.5 * aW[i] * dt * dt;
     state.velocity[i] = (state.velocity[i] + aW[i] * dt) * VEL_DAMPING;
   }
+}
+
+// Bias-Kalibrierung: 2 s lang stillhalten, Offset mitteln und künftig abziehen.
+function startCalibration() {
+  if (!('DeviceMotionEvent' in window)) {
+    setStatus('Kein Bewegungssensor verfügbar.');
+    return;
+  }
+  state.calibrating = true;
+  state.calSamples = [];
+  state.calEndT = performance.now() + 2000;
+  setStatus('Kalibriere … Handy 2 s ruhig halten.');
+}
+
+function finishCalibration() {
+  const n = state.calSamples.length;
+  if (n > 0) {
+    const sum = [0, 0, 0];
+    for (const s of state.calSamples) { sum[0] += s[0]; sum[1] += s[1]; sum[2] += s[2]; }
+    state.accBias = [sum[0] / n, sum[1] / n, sum[2] / n];
+  }
+  state.calibrating = false;
+  state.calSamples = [];
+  state.velocity = [0, 0, 0];
+  state.position = [0, 0, 0];
+  state.lastMotionT = 0;
+  const b = state.accBias;
+  setStatus(`Kalibriert · Offset ${Math.hypot(b[0], b[1], b[2]).toFixed(3)} m/s² entfernt.`);
 }
 
 // Position & Geschwindigkeit auf 0 setzen ("Kugel" neu auf das Handy zentrieren).
@@ -531,6 +575,7 @@ function init() {
 
   document.getElementById('btn-start').addEventListener('click', start);
   document.getElementById('btn-stop').addEventListener('click', stop);
+  document.getElementById('btn-calibrate').addEventListener('click', startCalibration);
   document.getElementById('btn-center').addEventListener('click', recenter);
   document.getElementById('btn-clear').addEventListener('click', clearMarkers);
 
