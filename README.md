@@ -38,38 +38,40 @@ Das genaue Sichtfeld ist für die Wiederauffindbarkeit unkritisch – bei
 identischer Orientierung kürzt es sich heraus; es beeinflusst nur die
 Genauigkeit während der Drehung.
 
-### Ausführen
+### Ausführen (lokal)
 
-Kamera- und Sensorzugriff erfordern einen **sicheren Kontext (HTTPS)** bzw.
-`localhost`. Ein beliebiger statischer Server genügt:
+Das Projekt nutzt **Vite**. Kamera- und Sensorzugriff erfordern einen
+**sicheren Kontext (HTTPS)** bzw. `localhost`.
 
 ```bash
-# z. B. mit Python
-python3 -m http.server 8000
-# dann auf dem Smartphone (gleiches Netz / via HTTPS-Tunnel) öffnen
+npm install      # Abhängigkeiten installieren
+npm run dev      # Dev-Server (im LAN erreichbar: host aktiviert)
+npm run build    # Produktions-Build nach dist/
+npm run preview  # gebautes dist/ lokal testen
 ```
 
-Auf dem Smartphone die Seite öffnen, **„Starten"** tippen und Kamera- sowie
-Bewegungssensor-Zugriff erlauben (iOS fragt explizit nach).
+Zum Test auf dem Smartphone den Dev-Server im gleichen Netz öffnen (oder ein
+HTTPS-Tunnel), **„Starten"** tippen und Kamera- sowie Bewegungssensor-Zugriff
+erlauben (iOS fragt explizit nach).
 
 ### Deployment auf Vercel
 
-Die App ist eine rein **statische PWA** (kein Build-Schritt). `vercel.json`
-konfiguriert das Projekt als statisches Hosting („Other") und setzt
-PWA-freundliche Header (Service-Worker-Scope, Manifest-Content-Type,
-`Permissions-Policy` für Kamera/Gyroskop/Beschleunigung/Magnetometer).
-Vercel liefert automatisch HTTPS – Voraussetzung für Kamera- und Sensorzugriff.
+Vite-Projekt mit **Git-Integration** (gleiches Prinzip wie das Schwesterprojekt):
+Vercel führt bei jedem Push `npm run build` aus und veröffentlicht `dist/`.
+`vercel.json` setzt zusätzlich PWA-freundliche Header (Service-Worker-Scope,
+Manifest-Content-Type, `Permissions-Policy` für Kamera/Gyroskop/Beschleunigung/
+Magnetometer). HTTPS liefert Vercel automatisch – Voraussetzung für Kamera/Sensoren.
 
-**Einrichtung (einmalig, wie beim Schwesterprojekt – Git-Integration):**
+**Einrichtung (einmalig):**
 
 1. In Vercel **„Add New… → Project"** und das Repo `gunterstruck/soundpointer`
    importieren.
-2. **Framework Preset:** `Other` (kein Build nötig). Build/Install/Output bleiben
-   leer – das übernimmt bereits `vercel.json`.
+2. **Framework Preset:** `Vite` (wird automatisch erkannt) – Build `npm run build`,
+   Output `dist`.
 3. **Production Branch:** `main`. Deployen.
 
-Danach löst jeder Push nach `main` automatisch ein Deployment aus; Pushes auf
-andere Branches/PRs erzeugen Preview-Deployments.
+Danach löst jeder Push nach `main` automatisch ein Production-Deployment aus;
+Pushes auf andere Branches/PRs erzeugen Preview-Deployments.
 
 ### Erfolgsdefinition
 
@@ -89,10 +91,13 @@ andere Branches/PRs erzeugen Preview-Deployments.
 ## Projektstruktur
 
 ```
-index.html              App-Shell + Overlay
-css/style.css           Layout, Marker, Fadenkreuz, Debug-UI
-js/app.js               Orientierungs-/Projektionsengine, Sensorik, Kamera
-manifest.webmanifest    PWA-Manifest
-sw.js                   Service Worker (Offline-Cache)
-icons/icon.svg          App-Icon
+index.html                   Vite-Entry + Overlay-Markup
+src/main.js                  Orientierungs-/Projektionsengine, Sensorik, Kamera
+src/style.css                Layout, Marker, Fadenkreuz, Debug-UI (via main.js importiert)
+public/manifest.webmanifest  PWA-Manifest  (unverändert ins dist/-Root kopiert)
+public/sw.js                 Service Worker (Offline-Cache)
+public/icons/icon.svg        App-Icon
+vite.config.js               Build-Konfiguration
+vercel.json                  Vercel-Deploy-Konfiguration (Vite + Header)
+package.json                 Scripts & Abhängigkeiten
 ```
