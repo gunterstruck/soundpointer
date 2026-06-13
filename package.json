@@ -1,0 +1,15 @@
+{
+  "name": "soundpointer",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Sensorstabile AR-Markierung – räumliche Orientierung als Grundlage für akustische Lokalisierung (Milestone 1).",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "devDependencies": {
+    "vite": "^6.0.0"
+  }
+}
