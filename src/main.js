@@ -206,6 +206,8 @@ const state = {
   velocity: [0, 0, 0],         // m/s
   hasMotion: false,
   motionSupported: false,
+  gravityFree: false,          // liefert das Gerät schwerkraftfreie Beschleunigung?
+  accMag: 0,                   // aktueller Betrag |a| (m/s²) – zur Überprüfung
   lastMotionT: 0,
   // Kalibrierung: gemittelter Sensor-Offset (Bias) bei stillem Handy.
   accBias: [0, 0, 0],
@@ -291,12 +293,26 @@ function onOrientation(ev, absolute) {
 
 // Beschleunigung -> Position (experimentelles 6DoF, doppelte Integration).
 function onMotion(ev) {
-  const acc = ev.acceleration; // ohne Schwerkraft
-  if (!acc || (acc.x == null && acc.y == null && acc.z == null)) return;
+  const acc = ev.acceleration;                  // OHNE Schwerkraft (vom OS entfernt)
+  const accG = ev.accelerationIncludingGravity; // MIT Schwerkraft (roh)
+
+  if (acc && (acc.x != null || acc.y != null || acc.z != null)) {
+    state.gravityFree = true; // gut: Schwerkraft ist bereits herausgerechnet
+  } else if (accG && (accG.x != null || accG.y != null || accG.z != null)) {
+    // Gerät liefert nur Werte MIT Schwerkraft -> Position nicht zuverlässig trackbar.
+    state.motionSupported = true;
+    state.gravityFree = false;
+    state.accMag = Math.hypot(accG.x || 0, accG.y || 0, accG.z || 0);
+    return;
+  } else {
+    return;
+  }
+
   state.motionSupported = true;
   state.hasMotion = true;
 
   const raw = [acc.x || 0, acc.y || 0, acc.z || 0];
+  state.accMag = Math.hypot(raw[0], raw[1], raw[2]); // sollte bei Ruhe ~0 sein
 
   // Kalibrierung: bei stillem Handy Messwerte sammeln -> Mittelwert = Bias.
   if (state.calibrating) {
@@ -478,7 +494,7 @@ function render() {
 
 const dbg = {};
 function cacheDom() {
-  ['source', 'azimuth', 'pitch', 'roll', 'pos', 'dist', 'count'].forEach((k) => {
+  ['source', 'azimuth', 'pitch', 'roll', 'amag', 'pos', 'dist', 'count'].forEach((k) => {
     dbg[k] = document.getElementById('dbg-' + k);
   });
 }
@@ -492,6 +508,14 @@ function updateDebug() {
   dbg.azimuth.textContent = state.hasOrientation ? azimuth.toFixed(1) + '°' : '–';
   dbg.pitch.textContent = state.hasOrientation ? state.beta.toFixed(1) + '°' : '–';
   dbg.roll.textContent = state.hasOrientation ? state.gamma.toFixed(1) + '°' : '–';
+
+  // Beschleunigungsbetrag + Schwerkraft-Status (zur Überprüfung).
+  if (state.motionSupported) {
+    const tag = state.gravityFree ? 'g-frei ✓' : 'mit g!';
+    dbg.amag.textContent = state.accMag.toFixed(2) + ' m/s² · ' + tag;
+  } else {
+    dbg.amag.textContent = 'n/a';
+  }
 
   // Positions-Experiment: Versatz vom Startpunkt (in cm) + Gesamtdistanz.
   const p = state.position;
