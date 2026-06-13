@@ -69,6 +69,32 @@ const Quat = {
 
   conjugate(q) { return [-q[0], -q[1], -q[2], q[3]]; },
 
+  normalize(q) {
+    const len = Math.hypot(q[0], q[1], q[2], q[3]) || 1;
+    return [q[0] / len, q[1] / len, q[2] / len, q[3] / len];
+  },
+
+  // Sphärische Interpolation a -> b um Faktor t (zur Glättung der Orientierung)
+  slerp(a, b, t) {
+    let [ax, ay, az, aw] = a;
+    let [bx, by, bz, bw] = b;
+    let cos = ax * bx + ay * by + az * bz + aw * bw;
+    if (cos < 0) { bx = -bx; by = -by; bz = -bz; bw = -bw; cos = -cos; }
+    if (cos > 0.9995) {
+      return Quat.normalize([
+        ax + t * (bx - ax), ay + t * (by - ay),
+        az + t * (bz - az), aw + t * (bw - aw),
+      ]);
+    }
+    const theta0 = Math.acos(cos);
+    const theta = theta0 * t;
+    const sin = Math.sin(theta);
+    const sin0 = Math.sin(theta0);
+    const s0 = Math.cos(theta) - cos * sin / sin0;
+    const s1 = sin / sin0;
+    return [ax * s0 + bx * s1, ay * s0 + by * s1, az * s0 + bz * s1, aw * s0 + bw * s1];
+  },
+
   // Rotiert Vektor v=[x,y,z] mit Quaternion q
   rotateVec(q, v) {
     const [qx, qy, qz, qw] = q;
@@ -186,11 +212,19 @@ const state = {
   hasOrientation: false,
   isAbsolute: false,
   source: '–',
-  quat: Quat.identity(),
-  markers: [],   // { id, azimuth, elevation, timestamp, el(DOM) }
+  targetQuat: Quat.identity(), // rohe Sensororientierung (für das Setzen von Markern)
+  quat: Quat.identity(),       // geglättete Orientierung (für die Darstellung)
+  markers: [],   // { id, azimuth, elevation, timestamp, el(DOM), visible }
   nextId: 1,
   showDebug: true,
+  running: false,
+  sensorsInitialized: false,
+  absoluteSupported: false,
+  stream: null,
 };
+
+// Glättungsfaktor pro Frame (0..1): kleiner = ruhiger, größer = reaktiver.
+const SMOOTHING = 0.3;
 
 /* ============================================================= *
  *  Kamera
@@ -206,9 +240,18 @@ async function startCamera(video) {
     },
   };
   const stream = await navigator.mediaDevices.getUserMedia(constraints);
+  state.stream = stream;
   video.srcObject = stream;
   await video.play().catch(() => {});
   return stream;
+}
+
+function stopCamera(video) {
+  if (state.stream) {
+    state.stream.getTracks().forEach((t) => t.stop());
+    state.stream = null;
+  }
+  if (video) video.srcObject = null;
 }
 
 /* ============================================================= *
@@ -230,7 +273,6 @@ function onOrientation(ev, absolute) {
   state.alpha = ev.alpha || 0;
   state.beta = ev.beta || 0;
   state.gamma = ev.gamma || 0;
-  state.hasOrientation = true;
 
   // Absolute Orientierung (Magnetometer) bevorzugen.
   const eventIsAbsolute = absolute || ev.absolute === true;
@@ -241,11 +283,16 @@ function onOrientation(ev, absolute) {
     state.source = 'Gyroskop (relativ)';
   }
 
-  state.quat = deviceQuaternion(state.alpha, state.beta, state.gamma, state.screenAngle);
+  state.targetQuat = deviceQuaternion(state.alpha, state.beta, state.gamma, state.screenAngle);
+  if (!state.hasOrientation) state.quat = state.targetQuat; // ersten Wert nicht "hineinglätten"
+  state.hasOrientation = true;
 }
 
 async function initSensors() {
   updateScreenAngle();
+  // Listener nur einmal registrieren (Start-Stopp-Stopp-Start darf nicht doppeln).
+  if (state.sensorsInitialized) return state.absoluteSupported;
+
   if (screen.orientation && screen.orientation.addEventListener) {
     screen.orientation.addEventListener('change', updateScreenAngle);
   }
@@ -261,14 +308,14 @@ async function initSensors() {
   }
 
   // Absolute Orientierung bevorzugen, falls verfügbar.
-  let absoluteSupported = false;
   if ('ondeviceorientationabsolute' in window) {
-    absoluteSupported = true;
+    state.absoluteSupported = true;
     window.addEventListener('deviceorientationabsolute', (e) => onOrientation(e, true));
   }
   window.addEventListener('deviceorientation', (e) => onOrientation(e, false));
 
-  return absoluteSupported;
+  state.sensorsInitialized = true;
+  return state.absoluteSupported;
 }
 
 /* ============================================================= *
@@ -279,8 +326,9 @@ function placeMarker(px, py) {
   if (!state.hasOrientation) return;
   // 1) Bildschirmpunkt -> Strahl im Kamerasystem
   const camRay = screenToCameraRay(px, py);
-  // 2) Strahl -> Weltrichtung über aktuelles Quaternion
-  const worldDir = Quat.rotateVec(state.quat, camRay);
+  // 2) Strahl -> Weltrichtung über die ROHE Orientierung (passt exakt zum
+  //    Live-Kamerabild im Moment des Tippens, ohne Glättungs-Verzögerung)
+  const worldDir = Quat.rotateVec(state.targetQuat, camRay);
   // 3) Weltrichtung -> Azimut / Elevation (das wird gespeichert!)
   const { azimuth, elevation } = vectorToSpherical(worldDir);
 
@@ -294,6 +342,7 @@ function placeMarker(px, py) {
     elevation,
     timestamp: Date.now(),
     el,
+    visible: false,
   });
   setStatus(`Marker ${state.markers.length} gesetzt · Azimut ${azimuth.toFixed(1)}° · Elev ${elevation.toFixed(1)}°`);
 }
@@ -308,7 +357,17 @@ function clearMarkers() {
  *  Render-Schleife: Marker auf den Bildschirm projizieren
  * ============================================================= */
 
+// Hysterese-Grenzen: einmal sichtbar, bleibt der Marker bis SHOW_OUT sichtbar;
+// einmal verborgen, erscheint er erst wieder ab SHOW_IN. Das verhindert
+// Flackern am Bildrand bei kleinem Sensorrauschen.
+const SHOW_IN = 1.0;
+const SHOW_OUT = 1.18;
+
 function render() {
+  if (!state.running) return;
+
+  // Orientierung glätten (Tiefpass) -> ruhigere Marker trotz Sensorrauschen.
+  state.quat = Quat.slerp(state.quat, state.targetQuat, SMOOTHING);
   const invQ = Quat.conjugate(state.quat); // Welt -> Kamera
 
   for (const m of state.markers) {
@@ -317,13 +376,14 @@ function render() {
     const proj = cameraRayToScreen(camDir);
 
     if (!proj) {
+      m.visible = false;
       m.el.style.opacity = '0';
       continue;
     }
     const { px, py, ndcX, ndcY } = proj;
-    // Nur anzeigen, wenn innerhalb des sichtbaren Bereichs (mit kleiner Reserve).
-    const visible = Math.abs(ndcX) <= 1.05 && Math.abs(ndcY) <= 1.05;
-    m.el.style.opacity = visible ? '1' : '0';
+    const bound = m.visible ? SHOW_OUT : SHOW_IN;
+    m.visible = Math.abs(ndcX) <= bound && Math.abs(ndcY) <= bound;
+    m.el.style.opacity = m.visible ? '1' : '0';
     m.el.style.transform = `translate(${px}px, ${py}px)`;
   }
 
@@ -392,7 +452,11 @@ async function start() {
       ? 'Bereit · absolute Orientierung verfügbar. Tippe zum Markieren.'
       : 'Bereit · relative Orientierung (Gyroskop). Tippe zum Markieren.');
 
-    requestAnimationFrame(render);
+    // Render-Schleife nur einmal starten.
+    if (!state.running) {
+      state.running = true;
+      requestAnimationFrame(render);
+    }
   } catch (err) {
     console.error(err);
     gateErr.textContent = (err && err.message) ? err.message
@@ -400,11 +464,20 @@ async function start() {
   }
 }
 
+// Kamera stoppen und zurück zur Startseite. Marker bleiben erhalten und sind
+// nach erneutem Start wieder da; Sensor-Listener laufen weiter.
+function stop() {
+  state.running = false;
+  stopCamera(document.getElementById('camera'));
+  document.getElementById('gate').classList.remove('hidden');
+}
+
 function init() {
   cacheDom();
   wireTapToPlace();
 
   document.getElementById('btn-start').addEventListener('click', start);
+  document.getElementById('btn-stop').addEventListener('click', stop);
   document.getElementById('btn-clear').addEventListener('click', clearMarkers);
 
   const btnDebug = document.getElementById('btn-debug');
