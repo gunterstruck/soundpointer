@@ -55,8 +55,6 @@ html, body {
   border: 2px solid rgba(25, 227, 106, 0.95);
   box-shadow: 0 0 12px rgba(25, 227, 106, 0.8);
   will-change: transform, opacity;
-  opacity: 0;
-  transition: opacity 0.18s ease;
 }
 
 /* Fadenkreuz in der Bildschirmmitte */
