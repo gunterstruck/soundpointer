@@ -46,11 +46,22 @@
       <button id="btn-calibrate" type="button">Kalibrieren</button>
       <button id="btn-center" type="button">Zentrieren</button>
       <button id="btn-clear" type="button">Marker löschen</button>
+      <button id="btn-3d" type="button">3D-Ansicht</button>
       <button id="btn-debug" type="button">Debug aus</button>
     </div>
 
     <!-- Hinweis / Statusmeldung -->
     <div id="status">Tippe, um die Sensoren &amp; Kamera zu starten.</div>
+  </div>
+
+  <!-- Unabhängige 3D-Ansicht: Weg des Handys (Linie) + Marker (Punkte) -->
+  <div id="view3d" class="hidden">
+    <canvas id="view3d-canvas"></canvas>
+    <div id="view3d-hint">Ein Finger: drehen · Zwei Finger: zoomen</div>
+    <div id="view3d-bar">
+      <button id="btn-view-reset" type="button">Ansicht zurück</button>
+      <button id="btn-view-close" type="button">Schließen</button>
+    </div>
   </div>
 
   <!-- Start-Overlay (für iOS Sensor-/Kamerafreigabe nötig) -->
