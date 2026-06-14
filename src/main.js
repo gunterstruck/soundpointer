@@ -230,6 +230,7 @@ const state = {
   correctedPath: [], // [[x,y,z]] nach Drift-Korrektur
   closeError: 0,     // Schließfehler |Ende - Start| (m)
   view: 'ar',    // 'ar' | '3d'
+  parallax: false, // Marker mit Positions-Parallaxe (6DoF) statt reiner Richtung (3DoF)?
   showDebug: true,
   running: false,
   sensorsInitialized: false,
@@ -630,9 +631,12 @@ function render() {
   const invQ = Quat.conjugate(state.quat); // Welt -> Kamera
 
   for (const m of state.markers) {
-    // Richtung vom aktuellen Standort zum Marker (3D) -> Parallaxe bei Bewegung.
-    const rel = sub3(m.pos, state.position);
-    const camDir = Quat.rotateVec(invQ, rel);
+    // Standard: reine Richtung (3DoF) -> beim Kippen bleibt der Punkt fest.
+    // Parallaxe-Modus (6DoF, experimentell): Richtung vom aktuellen Standort zum Marker.
+    const worldVec = state.parallax
+      ? sub3(m.pos, state.position)
+      : sphericalToVector(m.azimuth, m.elevation);
+    const camDir = Quat.rotateVec(invQ, worldVec);
     const proj = cameraRayToScreen(camDir);
 
     if (!proj) {
@@ -801,6 +805,15 @@ function init() {
   document.getElementById('btn-3d').addEventListener('click', open3D);
   document.getElementById('btn-view-close').addEventListener('click', close3D);
   document.getElementById('btn-view-reset').addEventListener('click', () => view3d.resetView());
+
+  const btnParallax = document.getElementById('btn-parallax');
+  btnParallax.addEventListener('click', () => {
+    state.parallax = !state.parallax;
+    btnParallax.textContent = 'Parallaxe: ' + (state.parallax ? 'an' : 'aus');
+    setStatus(state.parallax
+      ? 'Parallaxe an (6DoF) – Marker reagiert auf Bewegung (driftet beim Kippen).'
+      : 'Parallaxe aus (3DoF) – Marker bleibt beim Kippen fest.');
+  });
 
   const btnDebug = document.getElementById('btn-debug');
   btnDebug.addEventListener('click', () => {
