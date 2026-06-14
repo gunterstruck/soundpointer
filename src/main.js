@@ -24,6 +24,7 @@
 'use strict';
 
 import './style.css';
+import { View3D } from './view3d.js';
 
 /* ============================================================= *
  *  Minimale Vektor-/Quaternion-Mathematik
@@ -216,6 +217,10 @@ const state = {
   calEndT: 0,
   markers: [],   // { id, pos:[x,y,z], azimuth, elevation, timestamp, el(DOM) }
   nextId: 1,
+  // Aufgezeichneter Weg des Handys (Trajektorie) für die 3D-Ansicht / spätere Array-Verarbeitung.
+  path: [],      // [{ t, p:[x,y,z] }]
+  lastPathT: 0,
+  view: 'ar',    // 'ar' | '3d'
   showDebug: true,
   running: false,
   sensorsInitialized: false,
@@ -229,6 +234,8 @@ const ACC_DEADZONE = 0.02;   // Beschleunigung darunter wird als 0 gewertet (m/s
                              // damit langsame/kleine Bewegungen erfasst werden (Kompromiss mit Drift)
 const VEL_DAMPING = 1.0;     // 1.0 = aus; <1 bremst Geschwindigkeit (gegen Weglaufen)
 const MAX_DT = 0.05;         // max. Zeitschritt pro Sample (s), gegen Sprünge
+const PATH_INTERVAL = 33;    // Abtastrate des Wegs (ms) ~30 Hz
+const PATH_MAX = 6000;       // max. gespeicherte Wegpunkte (Ringpuffer)
 
 /* ============================================================= *
  *  Kamera
@@ -377,6 +384,7 @@ function recenter() {
   for (const m of state.markers) m.pos = sub3(m.pos, p);
   state.position = [0, 0, 0];
   state.velocity = [0, 0, 0];
+  clearPath();
   setStatus('Neu zentriert · Position auf 0 zurückgesetzt.');
 }
 
@@ -460,12 +468,44 @@ function clearMarkers() {
   setStatus('Alle Marker gelöscht.');
 }
 
+function clearPath() {
+  state.path.length = 0;
+  state.lastPathT = 0;
+}
+
+// Aktuelle Handy-Position zeitgetaktet in die Trajektorie schreiben (Ringpuffer).
+function samplePath() {
+  if (!state.hasMotion) return;
+  const now = performance.now();
+  if (state.lastPathT && now - state.lastPathT < PATH_INTERVAL) return;
+  state.lastPathT = now;
+  state.path.push({ t: now, p: state.position.slice() });
+  if (state.path.length > PATH_MAX) state.path.shift();
+}
+
+// Szene für das 3D-Modul.
+function getScene() {
+  return {
+    path: state.path.map((s) => s.p),
+    markers: state.markers.map((m) => m.pos),
+    phone: state.position.slice(),
+  };
+}
+
 /* ============================================================= *
- *  Render-Schleife: Marker auf den Bildschirm projizieren
+ *  Render-Schleife: Marker projizieren bzw. 3D-Ansicht zeichnen
  * ============================================================= */
 
 function render() {
   if (!state.running) return;
+  samplePath();
+
+  if (state.view === '3d') {
+    if (view3d) view3d.draw(getScene());
+    requestAnimationFrame(render);
+    return;
+  }
+
   const invQ = Quat.conjugate(state.quat); // Welt -> Kamera
 
   for (const m of state.markers) {
@@ -568,6 +608,7 @@ async function start() {
     state.position = [0, 0, 0];
     state.velocity = [0, 0, 0];
     state.lastMotionT = 0;
+    clearPath();
 
     gate.classList.add('hidden');
     setStatus(absolute
@@ -594,15 +635,31 @@ function stop() {
   document.getElementById('gate').classList.remove('hidden');
 }
 
+let view3d = null;
+
+function open3D() {
+  state.view = '3d';
+  document.getElementById('view3d').classList.remove('hidden');
+}
+
+function close3D() {
+  state.view = 'ar';
+  document.getElementById('view3d').classList.add('hidden');
+}
+
 function init() {
   cacheDom();
   wireTapToPlace();
+  view3d = new View3D(document.getElementById('view3d-canvas'));
 
   document.getElementById('btn-start').addEventListener('click', start);
   document.getElementById('btn-stop').addEventListener('click', stop);
   document.getElementById('btn-calibrate').addEventListener('click', startCalibration);
   document.getElementById('btn-center').addEventListener('click', recenter);
   document.getElementById('btn-clear').addEventListener('click', clearMarkers);
+  document.getElementById('btn-3d').addEventListener('click', open3D);
+  document.getElementById('btn-view-close').addEventListener('click', close3D);
+  document.getElementById('btn-view-reset').addEventListener('click', () => view3d.resetView());
 
   const btnDebug = document.getElementById('btn-debug');
   btnDebug.addEventListener('click', () => {
