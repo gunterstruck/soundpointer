@@ -234,7 +234,8 @@ const state = {
 const MARKER_RADIUS = 2.0;   // angenommene Entfernung des Markers (Meter)
 const ACC_DEADZONE = 0.02;   // Beschleunigung darunter wird als 0 gewertet (m/s²) – klein halten,
                              // damit langsame/kleine Bewegungen erfasst werden (Kompromiss mit Drift)
-const VEL_DAMPING = 1.0;     // 1.0 = aus; <1 bremst Geschwindigkeit (gegen Weglaufen)
+const VEL_TAU = 0.5;         // Zeitkonstante der Geschwindigkeits-Dämpfung (s);
+                             // kleiner = stärker bremsen (gegen Rest-Geschwindigkeit/Weglaufen)
 const MAX_DT = 0.05;         // max. Zeitschritt pro Sample (s), gegen Sprünge
 const PATH_INTERVAL = 33;    // Abtastrate des Wegs (ms) ~30 Hz
 const PATH_MAX = 6000;       // max. gespeicherte Wegpunkte (Ringpuffer)
@@ -356,10 +357,14 @@ function onMotion(ev) {
   const aDev = [dz(corr[0]), dz(corr[1]), dz(corr[2])];
 
   // In Weltkoordinaten drehen und doppelt integrieren.
+  // Geschwindigkeits-Dämpfung (zeitbasiert): ohne anhaltende Beschleunigung
+  // zerfällt die Geschwindigkeit Richtung 0 -> stoppt das Weiterlaufen, auch
+  // wenn ZUPT (wegen Hand-Zittern) nicht auslöst.
+  const damp = Math.exp(-dt / VEL_TAU);
   const aW = Quat.rotateVec(state.devQuat, aDev);
   for (let i = 0; i < 3; i++) {
     state.position[i] += state.velocity[i] * dt + 0.5 * aW[i] * dt * dt;
-    state.velocity[i] = (state.velocity[i] + aW[i] * dt) * VEL_DAMPING;
+    state.velocity[i] = (state.velocity[i] + aW[i] * dt) * damp;
   }
   if (state.zupt) state.velocity = [0, 0, 0];
 }
