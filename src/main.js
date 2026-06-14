@@ -207,6 +207,7 @@ const state = {
   screenAngle: 0,
   hasOrientation: false,
   isAbsolute: false,
+  lastAbsoluteT: 0,   // Zeitpunkt des letzten absoluten Orientierungsevents
   source: '–',
   quat: Quat.identity(),       // Kamera -> Welt (für die Darstellung)
   devQuat: Quat.identity(),    // Gerät  -> Welt (für die Beschleunigung)
@@ -312,18 +313,24 @@ function updateScreenAngle() {
 
 function onOrientation(ev, absolute) {
   if (ev.alpha == null && ev.beta == null && ev.gamma == null) return;
+
+  const eventIsAbsolute = absolute || ev.absolute === true;
+  const now = performance.now();
+
+  // Absolute Orientierung (Magnetometer) ist autoritativ. Ein relatives Event
+  // darf eine kürzlich erhaltene absolute Orientierung NICHT überschreiben.
+  if (eventIsAbsolute) {
+    state.lastAbsoluteT = now;
+    state.isAbsolute = true;
+    state.source = 'Magnetometer (absolut)';
+  } else {
+    if (now - state.lastAbsoluteT < 1500) return; // absolute liegt vor -> relatives ignorieren
+    if (!state.isAbsolute) state.source = 'Gyroskop (relativ)';
+  }
+
   state.alpha = ev.alpha || 0;
   state.beta = ev.beta || 0;
   state.gamma = ev.gamma || 0;
-
-  // Absolute Orientierung (Magnetometer) bevorzugen.
-  const eventIsAbsolute = absolute || ev.absolute === true;
-  if (eventIsAbsolute) {
-    state.isAbsolute = true;
-    state.source = 'Magnetometer (absolut)';
-  } else if (!state.isAbsolute) {
-    state.source = 'Gyroskop (relativ)';
-  }
 
   state.quat = deviceQuaternion(state.alpha, state.beta, state.gamma, state.screenAngle);
   state.devQuat = deviceWorldQuaternion(state.alpha, state.beta, state.gamma);
