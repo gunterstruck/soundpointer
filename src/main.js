@@ -25,6 +25,7 @@
 
 import './style.css';
 import { View3D } from './view3d.js';
+import { TargetTone } from './audio.js';
 
 /* ============================================================= *
  *  Minimale Vektor-/Quaternion-Mathematik
@@ -862,6 +863,53 @@ function stop() {
 
 let view3d = null;
 
+/* ---- Variante B: Audio-Lokalisierungsmodus ---- */
+let tone = null;
+let modeBRaf = 0;
+
+async function startModeB() {
+  const gate = document.getElementById('gate');
+  const modeB = document.getElementById('modeB');
+  const err = document.getElementById('b-error');
+  err.textContent = '';
+  gate.classList.add('hidden');
+  modeB.classList.remove('hidden');
+  try {
+    const freq = parseFloat(document.getElementById('b-freq').value) || 3000;
+    tone = new TargetTone();
+    await tone.start(freq); // Mikrofon-Freigabe (Nutzergeste vom Button-Klick)
+    modeBLoop();
+  } catch (e) {
+    console.error(e);
+    err.textContent = (e && e.message) ? e.message
+      : 'Mikrofonzugriff fehlgeschlagen (HTTPS + Freigabe erforderlich).';
+  }
+}
+
+function modeBLoop() {
+  if (!tone || !tone.running) return;
+  const l = tone.analyze();
+  // Pegel-Balken: dB-Bereich grob -80..0 auf 0..100 % abbilden.
+  const pct = Math.max(0, Math.min(100, ((l.db + 80) / 80) * 100));
+  document.getElementById('b-bar').style.width = pct.toFixed(0) + '%';
+  document.getElementById('b-db').textContent = (l.db <= -119 ? '–' : l.db.toFixed(1)) + ' dB';
+  document.getElementById('b-phase').textContent = (l.phase * 180 / Math.PI).toFixed(0) + '°';
+  document.getElementById('b-win').textContent = l.windowMs.toFixed(0) + ' ms';
+  document.getElementById('b-sr').textContent = (l.sampleRate / 1000).toFixed(1) + ' kHz';
+  const det = document.getElementById('b-detect');
+  const on = l.db > -45; // einfacher Schwellwert für "Ton erkannt"
+  det.textContent = on ? 'Ton erkannt' : 'kein Ton';
+  det.classList.toggle('on', on);
+  modeBRaf = requestAnimationFrame(modeBLoop);
+}
+
+function stopModeB() {
+  cancelAnimationFrame(modeBRaf);
+  if (tone) { tone.stop(); tone = null; }
+  document.getElementById('modeB').classList.add('hidden');
+  document.getElementById('gate').classList.remove('hidden');
+}
+
 function open3D() {
   state.view = '3d';
   document.getElementById('view3d').classList.remove('hidden');
@@ -878,6 +926,11 @@ function init() {
   view3d = new View3D(document.getElementById('view3d-canvas'));
 
   document.getElementById('btn-start').addEventListener('click', start);
+  document.getElementById('btn-start-b').addEventListener('click', startModeB);
+  document.getElementById('b-close').addEventListener('click', stopModeB);
+  document.getElementById('b-freq').addEventListener('input', (e) => {
+    if (tone) tone.setFreq(parseFloat(e.target.value) || 0);
+  });
   document.getElementById('btn-stop').addEventListener('click', stop);
   document.getElementById('btn-calibrate').addEventListener('click', startCalibration);
   document.getElementById('btn-center').addEventListener('click', recenter);

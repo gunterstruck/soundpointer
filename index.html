@@ -84,7 +84,36 @@
          Punkt zu setzen – dreh dich weg und wieder zurück, der Punkt bleibt
          an seiner realen Position.</p>
       <button id="btn-start" type="button">Starten</button>
+      <button id="btn-start-b" type="button" class="secondary">🔊 Lokalisierung (B)</button>
       <p id="gate-error" class="err"></p>
+    </div>
+  </div>
+
+  <!-- Variante B: Audio-Lokalisierung (eigener Modus) -->
+  <div id="modeB" class="hidden">
+    <div class="b-panel">
+      <h2>Lokalisierung (B)</h2>
+      <p class="b-sub">Analyse einer bekannten Zielfrequenz</p>
+
+      <label class="b-freq">Zielfrequenz
+        <span><input id="b-freq" type="number" value="3000" min="50" max="20000" step="10" /> Hz</span>
+      </label>
+
+      <div class="b-meter" aria-hidden="true"><div id="b-bar"></div></div>
+      <div id="b-detect">kein Ton</div>
+
+      <div class="b-stats">
+        <div class="row"><span>Pegel</span><b id="b-db">– dB</b></div>
+        <div class="row"><span>Phase</span><b id="b-phase">–</b></div>
+        <div class="row"><span>Fenster</span><b id="b-win">–</b></div>
+        <div class="row"><span>Abtastrate</span><b id="b-sr">–</b></div>
+      </div>
+
+      <p id="b-error" class="err"></p>
+      <div class="b-actions">
+        <button id="b-close" type="button">Schließen</button>
+      </div>
+      <p class="b-hint">Tipp: Mit einem zweiten Handy genau diese Frequenz abspielen – der Pegel sollte deutlich ausschlagen.</p>
     </div>
   </div>
 

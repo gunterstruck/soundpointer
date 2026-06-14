@@ -222,6 +222,89 @@ html, body {
 }
 #view3d-bar button:active { background: rgba(255, 255, 255, 0.15); }
 
+/* Variante B – Audio-Lokalisierungsmodus */
+#modeB {
+  position: fixed;
+  inset: 0;
+  z-index: 8;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: radial-gradient(circle at 50% 30%, #0c1a22, #000 72%);
+}
+#modeB.hidden { display: none; }
+.b-panel {
+  width: 100%;
+  max-width: 420px;
+  text-align: center;
+}
+.b-panel h2 { margin: 0; font-size: 26px; }
+.b-panel .b-sub { margin: 4px 0 22px; color: #36c6ff; font-size: 14px; }
+.b-freq {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 14px;
+  color: rgba(255, 255, 255, 0.75);
+}
+.b-freq span { display: flex; align-items: center; justify-content: center; gap: 8px; color: #fff; }
+.b-freq input {
+  width: 130px;
+  padding: 10px 12px;
+  font-size: 20px;
+  text-align: center;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  background: rgba(255, 255, 255, 0.06);
+  color: #fff;
+  font-variant-numeric: tabular-nums;
+}
+.b-meter {
+  margin: 22px 0 8px;
+  height: 18px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+#b-bar {
+  height: 100%;
+  width: 0%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #19e36a, #36c6ff);
+  transition: width 0.08s linear;
+}
+#b-detect { font-size: 13px; color: rgba(255, 255, 255, 0.6); min-height: 1.2em; }
+#b-detect.on { color: #19e36a; font-weight: 600; }
+.b-stats {
+  margin: 18px auto 0;
+  max-width: 280px;
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+}
+.b-stats .row { display: flex; justify-content: space-between; padding: 3px 0; }
+.b-stats .row span { color: rgba(255, 255, 255, 0.6); }
+.b-stats .row b { color: #36c6ff; font-weight: 600; }
+.b-actions { margin-top: 22px; }
+.b-actions button {
+  appearance: none;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+  padding: 12px 28px;
+  border-radius: 999px;
+  font-size: 15px;
+}
+.b-hint { margin-top: 16px; font-size: 12px; color: rgba(255, 255, 255, 0.5); line-height: 1.5; }
+
+.gate-card button.secondary {
+  margin-top: 12px;
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  color: #fff;
+  font-weight: 600;
+}
+
 /* Start-Gate */
 #gate {
   position: fixed;
