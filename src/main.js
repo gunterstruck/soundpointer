@@ -94,6 +94,13 @@ function normalize3(v) {
 
 function sub3(a, b) { return [a[0] - b[0], a[1] - b[1], a[2] - b[2]]; }
 
+// Winkel (Grad) zwischen zwei Orientierungs-Quaternionen.
+function quatAngleDeg(a, b) {
+  let d = Math.abs(a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3]);
+  d = Math.min(1, d);
+  return 2 * Math.acos(d) * RAD;
+}
+
 /* ============================================================= *
  *  Geräteorientierung -> Quaternion (Kamera-Blickrichtung)
  * ============================================================= */
@@ -233,6 +240,11 @@ const state = {
   startFrame: null,  // Kamerabild am Start der Messung
   endFrame: null,    // Kamerabild am Ende
   frameMatch: 0,     // Bildähnlichkeit Start↔Ende (-1..1)
+  startQuat: null,   // Blickrichtung am Start
+  endQuat: null,     // Blickrichtung am Ende
+  orientDelta: 0,    // Winkelunterschied Start↔Ende (Grad)
+  orientFit: false,  // Orientierung am Ende ~ wie am Start?
+  positionFrozen: false, // Positions-Integration nach der Messung pausiert?
   view: 'ar',    // 'ar' | '3d'
   parallax: false, // Marker mit Positions-Parallaxe (6DoF) statt reiner Richtung (3DoF)?
   showDebug: true,
@@ -254,6 +266,7 @@ const PATH_MAX = 6000;       // max. gespeicherte Wegpunkte (Ringpuffer)
 const ZUPT_ACC = 0.10;       // Beschleunigung darunter gilt als "ruhig" (m/s²)
 const ZUPT_HOLD = 0.20;      // so lange ruhig -> Geschwindigkeit nullen (s)
 const MEAS_DURATION = 5;     // Dauer der geführten Messung (s)
+const ORIENT_FIT_DEG = 12;   // max. Winkelunterschied Start↔Ende für "Fit" (Grad)
 
 /* ============================================================= *
  *  Kamera
@@ -348,6 +361,12 @@ function onMotion(ev) {
     return; // während der Kalibrierung nicht integrieren
   }
 
+  // Nach einer Messung ist die Position eingefroren (kein Weiterdriften).
+  if (state.positionFrozen) {
+    state.lastMotionT = performance.now();
+    return;
+  }
+
   const now = performance.now();
   let dt = state.lastMotionT ? (now - state.lastMotionT) / 1000 : 0;
   state.lastMotionT = now;
@@ -406,6 +425,7 @@ function finishCalibration() {
   state.velocity = [0, 0, 0];
   state.position = [0, 0, 0];
   state.lastMotionT = 0;
+  state.positionFrozen = false;
   const b = state.accBias;
   setStatus(`Kalibriert · Offset ${Math.hypot(b[0], b[1], b[2]).toFixed(3)} m/s² entfernt.`);
 }
@@ -421,6 +441,7 @@ function recenter() {
   state.correctedPath = [];
   state.closeError = 0;
   state.recording = true; // frische Live-Aufzeichnung
+  state.positionFrozen = false;
   setStatus('Neu zentriert · Position auf 0 zurückgesetzt.');
 }
 
@@ -567,6 +588,11 @@ function startMeasurement() {
   state.startFrame = captureFrame(); // Foto am Start
   state.endFrame = null;
   state.frameMatch = 0;
+  state.startQuat = state.quat.slice(); // Blickrichtung am Start
+  state.endQuat = null;
+  state.orientDelta = 0;
+  state.orientFit = false;
+  state.positionFrozen = false;
   state.measuring = true;
   state.measEndT = performance.now() + MEAS_DURATION * 1000;
   document.getElementById('countdown').classList.remove('hidden');
@@ -596,6 +622,14 @@ function finalizeMeasurement() {
   // Foto am Ende + Ähnlichkeit zum Startfoto (Gültigkeitsprüfung der Schleife).
   state.endFrame = captureFrame();
   state.frameMatch = frameSimilarity(state.startFrame, state.endFrame);
+  // Orientierungs-Fit: Winkelunterschied der Blickrichtung Start↔Ende.
+  state.endQuat = state.quat.slice();
+  if (state.startQuat) {
+    state.orientDelta = quatAngleDeg(state.startQuat, state.endQuat);
+    state.orientFit = state.orientDelta <= ORIENT_FIT_DEG;
+  }
+  // Position einfrieren, damit "Versatz" nicht weiterdriftet.
+  state.positionFrozen = true;
 
   const path = state.path;
   if (path.length >= 2) {
@@ -647,7 +681,10 @@ function getScene() {
     phone: state.position.slice(),
     stats,
     frames: (state.startFrame && state.endFrame)
-      ? { start: state.startFrame.canvas, end: state.endFrame.canvas, match: state.frameMatch }
+      ? {
+          start: state.startFrame.canvas, end: state.endFrame.canvas,
+          match: state.frameMatch, orientDelta: state.orientDelta, fit: state.orientFit,
+        }
       : null,
   };
 }
