@@ -230,6 +230,9 @@ const state = {
   measEndT: 0,
   correctedPath: [], // [[x,y,z]] nach Drift-Korrektur
   closeError: 0,     // Schließfehler |Ende - Start| (m)
+  startFrame: null,  // Kamerabild am Start der Messung
+  endFrame: null,    // Kamerabild am Ende
+  frameMatch: 0,     // Bildähnlichkeit Start↔Ende (-1..1)
   view: 'ar',    // 'ar' | '3d'
   parallax: false, // Marker mit Positions-Parallaxe (6DoF) statt reiner Richtung (3DoF)?
   showDebug: true,
@@ -518,12 +521,52 @@ function samplePath() {
 
 /* ---- Geführte Messung mit Drift-Korrektur (Loop Closure) ---- */
 
+// Aktuelles Kamerabild als Thumbnail (zum Anzeigen) + Graustufen-Array (zum Vergleich).
+function captureFrame() {
+  const video = document.getElementById('camera');
+  if (!video || !video.videoWidth) return null;
+  const tw = 160, th = Math.round((160 * video.videoHeight) / video.videoWidth) || 120;
+  const c = document.createElement('canvas');
+  c.width = tw; c.height = th;
+  c.getContext('2d').drawImage(video, 0, 0, tw, th);
+  // Grobe Graustufen-Version (32xN) für die Ähnlichkeitsberechnung.
+  const gw = 32, gh = Math.max(1, Math.round((32 * th) / tw));
+  const gc = document.createElement('canvas');
+  gc.width = gw; gc.height = gh;
+  const gcx = gc.getContext('2d');
+  gcx.drawImage(c, 0, 0, gw, gh);
+  const px = gcx.getImageData(0, 0, gw, gh).data;
+  const gray = new Float32Array(gw * gh);
+  for (let i = 0; i < gw * gh; i++) {
+    gray[i] = 0.299 * px[i * 4] + 0.587 * px[i * 4 + 1] + 0.114 * px[i * 4 + 2];
+  }
+  return { canvas: c, gray };
+}
+
+// Normierte Kreuzkorrelation (-1..1): robust gegen Helligkeitsunterschiede.
+function frameSimilarity(a, b) {
+  if (!a || !b || a.gray.length !== b.gray.length) return 0;
+  const n = a.gray.length;
+  let ma = 0, mb = 0;
+  for (let i = 0; i < n; i++) { ma += a.gray[i]; mb += b.gray[i]; }
+  ma /= n; mb /= n;
+  let cov = 0, va = 0, vb = 0;
+  for (let i = 0; i < n; i++) {
+    const da = a.gray[i] - ma, db = b.gray[i] - mb;
+    cov += da * db; va += da * da; vb += db * db;
+  }
+  return cov / (Math.sqrt(va * vb) || 1);
+}
+
 function startMeasurement() {
   if (!state.motionSupported) { setStatus('Kein Bewegungssensor verfügbar.'); return; }
   // Frisch zentrieren und Pfad/Korrektur zurücksetzen.
   recenter();
   state.correctedPath = [];
   state.closeError = 0;
+  state.startFrame = captureFrame(); // Foto am Start
+  state.endFrame = null;
+  state.frameMatch = 0;
   state.measuring = true;
   state.measEndT = performance.now() + MEAS_DURATION * 1000;
   document.getElementById('countdown').classList.remove('hidden');
@@ -550,6 +593,10 @@ function updateMeasurement() {
 
 // Drift linear über die Zeit verteilen (Annahme: Ende = Start) und 3D zeigen.
 function finalizeMeasurement() {
+  // Foto am Ende + Ähnlichkeit zum Startfoto (Gültigkeitsprüfung der Schleife).
+  state.endFrame = captureFrame();
+  state.frameMatch = frameSimilarity(state.startFrame, state.endFrame);
+
   const path = state.path;
   if (path.length >= 2) {
     const t0 = path[0].t, tN = path[path.length - 1].t;
@@ -599,6 +646,9 @@ function getScene() {
     markers: state.markers.map((m) => m.pos),
     phone: state.position.slice(),
     stats,
+    frames: (state.startFrame && state.endFrame)
+      ? { start: state.startFrame.canvas, end: state.endFrame.canvas, match: state.frameMatch }
+      : null,
   };
 }
 
