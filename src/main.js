@@ -503,12 +503,28 @@ function samplePath() {
   if (state.path.length > PATH_MAX) state.path.shift();
 }
 
+// Kennzahlen des aufgezeichneten Wegs.
+function pathStats() {
+  const path = state.path;
+  let duration = 0, length = 0;
+  if (path.length >= 1) {
+    duration = (path[path.length - 1].t - path[0].t) / 1000;
+    for (let i = 1; i < path.length; i++) {
+      const a = path[i - 1].p, b = path[i].p;
+      length += Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]);
+    }
+  }
+  const p = state.position;
+  return { duration, length, dist: Math.hypot(p[0], p[1], p[2]) };
+}
+
 // Szene für das 3D-Modul.
 function getScene() {
   return {
     path: state.path.map((s) => s.p),
     markers: state.markers.map((m) => m.pos),
     phone: state.position.slice(),
+    stats: pathStats(),
   };
 }
 
@@ -555,7 +571,7 @@ function render() {
 
 const dbg = {};
 function cacheDom() {
-  ['source', 'azimuth', 'pitch', 'roll', 'amag', 'speed', 'pos', 'dist', 'count'].forEach((k) => {
+  ['source', 'azimuth', 'pitch', 'roll', 'amag', 'speed', 'pos', 'dist', 'time', 'count'].forEach((k) => {
     dbg[k] = document.getElementById('dbg-' + k);
   });
 }
@@ -596,6 +612,13 @@ function updateDebug() {
   } else {
     dbg.pos.textContent = state.motionSupported ? '0,0,0' : 'n/a';
     dbg.dist.textContent = state.motionSupported ? '0 cm' : 'n/a';
+  }
+  // Aufnahmedauer des Wegs.
+  if (state.path.length >= 1) {
+    const dur = (state.path[state.path.length - 1].t - state.path[0].t) / 1000;
+    dbg.time.textContent = dur.toFixed(1) + ' s';
+  } else {
+    dbg.time.textContent = '0 s';
   }
   dbg.count.textContent = String(state.markers.length);
 }

@@ -165,5 +165,16 @@ export class View3D {
     ctx.fillStyle = COL.path;   ctx.fillText('— Weg', 12, H - 46);
     ctx.fillStyle = COL.marker; ctx.fillText('● Marker', 12, H - 30);
     ctx.fillStyle = COL.phone;  ctx.fillText('● Handy', 12, H - 14);
+
+    // Kennzahlen (oben links): Dauer, Weglänge, Versatz vom Start.
+    if (scene.stats) {
+      const s = scene.stats;
+      ctx.font = '13px -apple-system, sans-serif';
+      ctx.fillStyle = 'rgba(255,255,255,0.92)';
+      const top = 22 + (window.innerWidth < 480 ? 24 : 0); // unter dem Hinweis-Chip
+      ctx.fillText('Dauer:   ' + s.duration.toFixed(1) + ' s', 12, top);
+      ctx.fillText('Weg:     ' + s.length.toFixed(2) + ' m', 12, top + 18);
+      ctx.fillText('Versatz: ' + s.dist.toFixed(2) + ' m', 12, top + 36);
+    }
   }
 }
