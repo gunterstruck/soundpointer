@@ -18,10 +18,19 @@ const COL = {
   path: '#36c6ff',     // Weg des Handys (roh)
   corr: '#ff9f43',     // korrigierter Weg (Loop Closure)
   marker: '#19e36a',   // gesetzte Marker
+  patch: 'rgba(25,227,106,0.30)', // angedeuteter Kugelausschnitt um den Marker
   phone: '#ffd23f',    // aktuelle Handy-Position
   start: 'rgba(255,255,255,0.9)',
   axX: '#ff5a5a', axY: '#5aff8a', axZ: '#5a9bff',
 };
+
+function cross(a, b) {
+  return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+}
+function norm3(v) {
+  const L = Math.hypot(v[0], v[1], v[2]) || 1;
+  return [v[0] / L, v[1] / L, v[2] / L];
+}
 
 function rotate(p, yaw, pitch) {
   // erst um Y (yaw), dann um X (pitch)
@@ -166,6 +175,32 @@ export class View3D {
 
     // Startpunkt (Ursprung / Kugelmittelpunkt).
     dot([0, 0, 0], COL.start, 4);
+
+    // Pro Marker einen leicht durchscheinenden Kugelausschnitt andeuten:
+    // ein um die Markerrichtung herum gebogenes Gitter auf der Kugeloberfläche
+    // (Radius = Abstand Marker↔Ursprung). Zeigt, dass der Punkt auf einer Kugel sitzt.
+    const PN = 4, PS = 0.4; // Gitterauflösung / Winkelausdehnung
+    for (const m of markers) {
+      const R = Math.hypot(m[0], m[1], m[2]);
+      if (R < 1e-3) continue;
+      const d = [m[0] / R, m[1] / R, m[2] / R];
+      const up = Math.abs(d[1]) > 0.95 ? [1, 0, 0] : [0, 1, 0];
+      const u = norm3(cross(d, up));
+      const v = cross(d, u);
+      const sph = (a, b) => {
+        const w = norm3([d[0] + a * u[0] + b * v[0], d[1] + a * u[1] + b * v[1], d[2] + a * u[2] + b * v[2]]);
+        return [w[0] * R, w[1] * R, w[2] * R];
+      };
+      for (let i = 0; i <= PN; i++) {
+        const a = -PS + (2 * PS * i) / PN;
+        for (let j = 0; j < PN; j++) {
+          const b0 = -PS + (2 * PS * j) / PN, b1 = -PS + (2 * PS * (j + 1)) / PN;
+          line(sph(a, b0), sph(a, b1), COL.patch, 1);
+          line(sph(b0, a), sph(b1, a), COL.patch, 1);
+        }
+      }
+    }
+
     // Marker (im Raum gesetzte Punkte).
     for (const m of markers) dot(m, COL.marker, 6);
     // Aktuelle Handy-Position.

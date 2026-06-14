@@ -226,7 +226,6 @@ const state = {
   // Geführte Messung + Drift-Korrektur (Loop Closure).
   measuring: false,
   measEndT: 0,
-  awaitingConfirm: false,
   correctedPath: [], // [[x,y,z]] nach Drift-Korrektur
   closeError: 0,     // Schließfehler |Ende - Start| (m)
   view: 'ar',    // 'ar' | '3d'
@@ -523,11 +522,9 @@ function startMeasurement() {
   recenter();
   state.correctedPath = [];
   state.closeError = 0;
-  state.awaitingConfirm = false;
   state.measuring = true;
   state.measEndT = performance.now() + MEAS_DURATION * 1000;
   document.getElementById('countdown').classList.remove('hidden');
-  document.getElementById('meas-confirm').classList.add('hidden');
 }
 
 // Pro Frame: Countdown anzeigen / Messfenster beenden.
@@ -541,20 +538,16 @@ function updateMeasurement() {
     cd.querySelector('.cd-hint').textContent =
       remain <= MEAS_DURATION * 0.5 ? '… zurück zum Start' : 'im Kreis bewegen';
   } else {
-    // Messfenster zu Ende -> Aufzeichnung einfrieren, Bestätigung anfordern.
+    // Messfenster zu Ende -> automatisch stoppen, korrigieren, 3D-Ansicht öffnen.
     state.measuring = false;
     state.recording = false;
     cd.classList.add('hidden');
-    state.awaitingConfirm = true;
-    document.getElementById('meas-confirm').classList.remove('hidden');
+    finalizeMeasurement();
   }
 }
 
-// Nutzer bestätigt: er ist wieder ~am Start -> Drift linear über die Zeit verteilen.
-function confirmMeasurement() {
-  state.awaitingConfirm = false;
-  document.getElementById('meas-confirm').classList.add('hidden');
-
+// Drift linear über die Zeit verteilen (Annahme: Ende = Start) und 3D zeigen.
+function finalizeMeasurement() {
   const path = state.path;
   if (path.length >= 2) {
     const t0 = path[0].t, tN = path[path.length - 1].t;
@@ -572,17 +565,11 @@ function confirmMeasurement() {
         s.p[2] - start[2] - err[2] * f,
       ];
     });
-    setStatus(`Korrigiert · Schließfehler ${state.closeError.toFixed(2)} m über ${(span / 1000).toFixed(1)} s verteilt.`);
-    open3D();
+    setStatus(`Messung fertig · Schließfehler ${state.closeError.toFixed(2)} m über ${(span / 1000).toFixed(1)} s.`);
   } else {
     setStatus('Zu wenig Wegdaten für eine Korrektur.');
   }
-}
-
-function cancelMeasurement() {
-  state.awaitingConfirm = false;
-  document.getElementById('meas-confirm').classList.add('hidden');
-  setStatus('Messung verworfen.');
+  open3D();
 }
 
 // Kennzahlen des aufgezeichneten Wegs.
@@ -799,8 +786,6 @@ function init() {
   document.getElementById('btn-calibrate').addEventListener('click', startCalibration);
   document.getElementById('btn-center').addEventListener('click', recenter);
   document.getElementById('btn-measure').addEventListener('click', startMeasurement);
-  document.getElementById('btn-meas-confirm').addEventListener('click', confirmMeasurement);
-  document.getElementById('btn-meas-cancel').addEventListener('click', cancelMeasurement);
   document.getElementById('btn-clear').addEventListener('click', clearMarkers);
   document.getElementById('btn-3d').addEventListener('click', open3D);
   document.getElementById('btn-view-close').addEventListener('click', close3D);
