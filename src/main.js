@@ -249,6 +249,7 @@ const state = {
   positionFrozen: false, // Positions-Integration nach der Messung pausiert?
   view: 'ar',    // 'ar' | '3d'
   parallax: false, // Marker mit Positions-Parallaxe (6DoF) statt reiner Richtung (3DoF)?
+  modeB: false,  // Variante-B-Modus aktiv?
   showDebug: true,
   running: false,
   sensorsInitialized: false,
@@ -837,6 +838,7 @@ async function start() {
     state.recording = true;
 
     gate.classList.add('hidden');
+    document.getElementById('overlay').classList.remove('hidden');
     setStatus(absolute
       ? 'Bereit · absolute Orientierung verfügbar. Tippe zum Markieren.'
       : 'Bereit · relative Orientierung (Gyroskop). Tippe zum Markieren.');
@@ -858,54 +860,198 @@ async function start() {
 function stop() {
   state.running = false;
   stopCamera(document.getElementById('camera'));
+  document.getElementById('overlay').classList.add('hidden');
   document.getElementById('gate').classList.remove('hidden');
 }
 
 let view3d = null;
 
-/* ---- Variante B: Audio-Lokalisierungsmodus ---- */
+/* ============================================================= *
+ *  Variante B: Audio-Lokalisierung (AR-Modus)
+ * ============================================================= *
+ *  Pipeline: kurze Messfenster (Phase+Amplitude der Zielfrequenz) ->
+ *  virtuelle Mikrofonpaare (Phasendifferenz, korrigiert um 2π·f·Δt) ->
+ *  Richtungsschätzung -> raumstabile, verblassende Konfidenzbänder.
+ *  Bewusst eine erste, vereinfachte Version zur Visualisierung des Prinzips.
+ */
 let tone = null;
 let modeBRaf = 0;
+let bCtx = null;
+
+const SOUND_C = 343;            // Schallgeschwindigkeit (m/s)
+const B_WIN_MS = 160;           // Abstand der Messfenster (ms)
+const B_DB_THRESH = -50;        // Mindestpegel, damit ein Fenster zählt (dB)
+const B_MIN_BASELINE = 0.04;    // Mindest-Bewegungsabstand für ein Paar (m)
+const B_MAX_PAIR_DT = 1800;     // max. Zeitabstand eines Paares (ms)
+const B_BAND_LIFE = 6000;       // Lebensdauer eines Bandes (ms)
+const B_MAX_BANDS = 60;
+
+const bState = {
+  windows: [],   // { t, fwd:[x,y,z], pos:[x,y,z], amp, phase, db }
+  bands: [],     // { az, el, halfWidth(rad), quality, t0 }
+  lastWinT: 0,
+};
+
+function anyPerp(a) {
+  // ein beliebiger zu a senkrechter Einheitsvektor
+  const ref = Math.abs(a[1]) < 0.9 ? [0, 1, 0] : [1, 0, 0];
+  const x = [a[1] * ref[2] - a[2] * ref[1], a[2] * ref[0] - a[0] * ref[2], a[0] * ref[1] - a[1] * ref[0]];
+  return normalize3(x);
+}
+
+function bCollectWindow(now, l) {
+  if (now - bState.lastWinT < B_WIN_MS) return;
+  bState.lastWinT = now;
+  const fwd = Quat.rotateVec(state.quat, [0, 0, -1]);
+  bState.windows.push({ t: now, fwd, pos: state.position.slice(), amp: l.magnitude, phase: l.phase, db: l.db });
+  while (bState.windows.length > 80) bState.windows.shift();
+  if (l.db > B_DB_THRESH) bFormPair(now, l);
+}
+
+// Aus dem neuesten Fenster + einem geeigneten früheren Fenster ein Band bilden.
+function bFormPair(now, cur) {
+  const A = bState.windows[bState.windows.length - 1];
+  let best = null, bestBase = 0;
+  for (let i = bState.windows.length - 2; i >= 0; i--) {
+    const w = bState.windows[i];
+    if (now - w.t > B_MAX_PAIR_DT) break;
+    if (w.db <= B_DB_THRESH) continue;
+    const base = Math.hypot(A.pos[0] - w.pos[0], A.pos[1] - w.pos[1], A.pos[2] - w.pos[2]);
+    if (base > bestBase) { bestBase = base; best = w; }
+  }
+  if (!best || bestBase < B_MIN_BASELINE) return;
+
+  const f = tone.freq;
+  const lambda = SOUND_C / f;
+  const dt = (A.t - best.t) / 1000;
+  // Phasendifferenz um die normale Zeit-Schwingung des Tons korrigieren.
+  let dphi = A.phase - best.phase - 2 * Math.PI * f * dt;
+  dphi = Math.atan2(Math.sin(dphi), Math.cos(dphi)); // auf [-π, π]
+  const d = (dphi / (2 * Math.PI)) * lambda;          // Laufzeitdifferenz-Strecke (m)
+  if (Math.abs(d) > bestBase) return;                 // physikalisch unmöglich -> verwerfen
+
+  const bvec = [A.pos[0] - best.pos[0], A.pos[1] - best.pos[1], A.pos[2] - best.pos[2]];
+  const bhat = normalize3(bvec);
+  const cosT = Math.max(-1, Math.min(1, d / bestBase));
+  const sinT = Math.sqrt(Math.max(0, 1 - cosT * cosT));
+
+  // Aus dem Lösungs-Kegel die Richtung nahe der Blickrichtung wählen.
+  const fwd = A.fwd;
+  const dotfa = fwd[0] * bhat[0] + fwd[1] * bhat[1] + fwd[2] * bhat[2];
+  let fperp = [fwd[0] - dotfa * bhat[0], fwd[1] - dotfa * bhat[1], fwd[2] - dotfa * bhat[2]];
+  const fpl = Math.hypot(fperp[0], fperp[1], fperp[2]);
+  fperp = fpl < 1e-4 ? anyPerp(bhat) : [fperp[0] / fpl, fperp[1] / fpl, fperp[2] / fpl];
+  const u = [
+    cosT * bhat[0] + sinT * fperp[0],
+    cosT * bhat[1] + sinT * fperp[1],
+    cosT * bhat[2] + sinT * fperp[2],
+  ];
+  const { azimuth, elevation } = vectorToSpherical(u);
+
+  // Qualität: längere Basis und stärkeres Signal -> schmaleres, sichereres Band.
+  const baseQ = Math.min(1, bestBase / (lambda * 0.5));
+  const sigQ = Math.min(1, Math.max(0, (cur.db + 60) / 45));
+  const quality = Math.max(0.05, baseQ * sigQ);
+  const halfWidth = (8 + 55 * (1 - quality)) * DEG;
+
+  bState.bands.push({ az: azimuth, el: elevation, halfWidth, quality, t0: now });
+  while (bState.bands.length > B_MAX_BANDS) bState.bands.shift();
+}
+
+function bClear() {
+  bState.bands.length = 0;
+  bState.windows.length = 0;
+}
+
+// Raumstabile Konfidenzbänder über dem Kamerabild zeichnen (Überlagerung = Heatmap).
+function bRenderBands(now) {
+  const cv = document.getElementById('b-canvas');
+  const dpr = window.devicePixelRatio || 1;
+  const W = window.innerWidth, H = window.innerHeight;
+  if (cv.width !== W * dpr || cv.height !== H * dpr) { cv.width = W * dpr; cv.height = H * dpr; }
+  bCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  bCtx.clearRect(0, 0, W, H);
+
+  const { tanX } = getFov();
+  const invQ = Quat.conjugate(state.quat);
+  bCtx.globalCompositeOperation = 'lighter'; // additive Überlagerung -> Hotspots
+  for (let i = bState.bands.length - 1; i >= 0; i--) {
+    const band = bState.bands[i];
+    const age = now - band.t0;
+    if (age > B_BAND_LIFE) { bState.bands.splice(i, 1); continue; }
+    const fade = 1 - age / B_BAND_LIFE;
+    const dir = sphericalToVector(band.az, band.el);
+    const cam = Quat.rotateVec(invQ, dir);
+    const proj = cameraRayToScreen(cam);
+    if (!proj) continue;
+    const rpx = (Math.tan(band.halfWidth) / tanX) * (W / 2);
+    const alpha = 0.22 * band.quality * fade;
+    const g = bCtx.createRadialGradient(proj.px, proj.py, 0, proj.px, proj.py, Math.max(8, rpx));
+    g.addColorStop(0, `rgba(255,90,40,${alpha})`);
+    g.addColorStop(1, 'rgba(255,90,40,0)');
+    bCtx.fillStyle = g;
+    bCtx.beginPath();
+    bCtx.arc(proj.px, proj.py, Math.max(8, rpx), 0, Math.PI * 2);
+    bCtx.fill();
+  }
+  bCtx.globalCompositeOperation = 'source-over';
+}
 
 async function startModeB() {
   const gate = document.getElementById('gate');
   const modeB = document.getElementById('modeB');
+  const overlay = document.getElementById('overlay');
   const err = document.getElementById('b-error');
+  const video = document.getElementById('camera');
   err.textContent = '';
   gate.classList.add('hidden');
+  overlay.classList.add('hidden');
   modeB.classList.remove('hidden');
+  bCtx = document.getElementById('b-canvas').getContext('2d');
   try {
     const freq = parseFloat(document.getElementById('b-freq').value) || 3000;
+    await startCamera(video);
+    await initSensors();
+    // Position frisch & frei laufend (für die Bewegungsbasis der Paare).
+    state.position = [0, 0, 0];
+    state.velocity = [0, 0, 0];
+    state.lastMotionT = 0;
+    state.positionFrozen = false;
+    bClear();
     tone = new TargetTone();
     await tone.start(freq); // Mikrofon-Freigabe (Nutzergeste vom Button-Klick)
+    state.modeB = true;
     modeBLoop();
   } catch (e) {
     console.error(e);
     err.textContent = (e && e.message) ? e.message
-      : 'Mikrofonzugriff fehlgeschlagen (HTTPS + Freigabe erforderlich).';
+      : 'Kamera-/Mikrofonzugriff fehlgeschlagen (HTTPS + Freigabe erforderlich).';
   }
 }
 
 function modeBLoop() {
-  if (!tone || !tone.running) return;
-  const l = tone.analyze();
-  // Pegel-Balken: dB-Bereich grob -80..0 auf 0..100 % abbilden.
-  const pct = Math.max(0, Math.min(100, ((l.db + 80) / 80) * 100));
-  document.getElementById('b-bar').style.width = pct.toFixed(0) + '%';
-  document.getElementById('b-db').textContent = (l.db <= -119 ? '–' : l.db.toFixed(1)) + ' dB';
-  document.getElementById('b-phase').textContent = (l.phase * 180 / Math.PI).toFixed(0) + '°';
-  document.getElementById('b-win').textContent = l.windowMs.toFixed(0) + ' ms';
-  document.getElementById('b-sr').textContent = (l.sampleRate / 1000).toFixed(1) + ' kHz';
-  const det = document.getElementById('b-detect');
-  const on = l.db > -45; // einfacher Schwellwert für "Ton erkannt"
-  det.textContent = on ? 'Ton erkannt' : 'kein Ton';
-  det.classList.toggle('on', on);
+  if (!state.modeB) return;
+  const now = performance.now();
+  const l = tone ? tone.analyze() : null;
+  if (l) {
+    bCollectWindow(now, l);
+    document.getElementById('b-db').textContent = (l.db <= -119 ? '–' : l.db.toFixed(1)) + ' dB';
+    const det = document.getElementById('b-detect');
+    const on = l.db > B_DB_THRESH;
+    det.textContent = on ? 'Ton erkannt' : 'kein Ton';
+    det.classList.toggle('on', on);
+  }
+  bRenderBands(now);
+  document.getElementById('b-count').textContent = String(bState.bands.length);
   modeBRaf = requestAnimationFrame(modeBLoop);
 }
 
 function stopModeB() {
+  state.modeB = false;
   cancelAnimationFrame(modeBRaf);
   if (tone) { tone.stop(); tone = null; }
+  stopCamera(document.getElementById('camera'));
+  bClear();
   document.getElementById('modeB').classList.add('hidden');
   document.getElementById('gate').classList.remove('hidden');
 }
@@ -928,8 +1074,10 @@ function init() {
   document.getElementById('btn-start').addEventListener('click', start);
   document.getElementById('btn-start-b').addEventListener('click', startModeB);
   document.getElementById('b-close').addEventListener('click', stopModeB);
+  document.getElementById('b-clear').addEventListener('click', bClear);
   document.getElementById('b-freq').addEventListener('input', (e) => {
     if (tone) tone.setFreq(parseFloat(e.target.value) || 0);
+    bClear(); // bei Frequenzwechsel alte Bänder verwerfen
   });
   document.getElementById('btn-stop').addEventListener('click', stop);
   document.getElementById('btn-calibrate').addEventListener('click', startCalibration);
