@@ -222,6 +222,7 @@ const state = {
   // Aufgezeichneter Weg des Handys (Trajektorie) für die 3D-Ansicht / spätere Array-Verarbeitung.
   path: [],      // [{ t, p:[x,y,z] }]
   lastPathT: 0,
+  recording: true, // zeichnet der Pfad gerade auf? (nach einer Messung eingefroren)
   // Geführte Messung + Drift-Korrektur (Loop Closure).
   measuring: false,
   measEndT: 0,
@@ -412,6 +413,9 @@ function recenter() {
   state.position = [0, 0, 0];
   state.velocity = [0, 0, 0];
   clearPath();
+  state.correctedPath = [];
+  state.closeError = 0;
+  state.recording = true; // frische Live-Aufzeichnung
   setStatus('Neu zentriert · Position auf 0 zurückgesetzt.');
 }
 
@@ -502,7 +506,7 @@ function clearPath() {
 
 // Aktuelle Handy-Position zeitgetaktet in die Trajektorie schreiben (Ringpuffer).
 function samplePath() {
-  if (!state.hasMotion) return;
+  if (!state.hasMotion || !state.recording) return;
   const now = performance.now();
   if (state.lastPathT && now - state.lastPathT < PATH_INTERVAL) return;
   state.lastPathT = now;
@@ -536,8 +540,9 @@ function updateMeasurement() {
     cd.querySelector('.cd-hint').textContent =
       remain <= MEAS_DURATION * 0.5 ? '… zurück zum Start' : 'im Kreis bewegen';
   } else {
-    // Messfenster zu Ende -> Bestätigung anfordern.
+    // Messfenster zu Ende -> Aufzeichnung einfrieren, Bestätigung anfordern.
     state.measuring = false;
+    state.recording = false;
     cd.classList.add('hidden');
     state.awaitingConfirm = true;
     document.getElementById('meas-confirm').classList.remove('hidden');
@@ -741,6 +746,7 @@ async function start() {
     state.velocity = [0, 0, 0];
     state.lastMotionT = 0;
     clearPath();
+    state.recording = true;
 
     gate.classList.add('hidden');
     setStatus(absolute
