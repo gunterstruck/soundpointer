@@ -246,6 +246,12 @@ export class View3D {
       ctx.fillStyle = pct >= 80 ? COL.marker : (pct >= 60 ? COL.corr : '#ff5a5a');
       ctx.font = '13px -apple-system, sans-serif';
       ctx.fillText('Übereinst.: ' + pct + '%', x, top + 2 * thh + 36);
+      // Orientierungs-Fit: nur bei ähnlichem Winkel ist der %-Wert aussagekräftig.
+      if (f.orientDelta != null) {
+        ctx.fillStyle = f.fit ? COL.marker : '#ff5a5a';
+        ctx.fillText('Winkel Δ ' + Math.round(f.orientDelta) + '° ' + (f.fit ? '✓ Fit' : '✗ kein Fit'),
+          x, top + 2 * thh + 54);
+      }
     }
   }
 }
