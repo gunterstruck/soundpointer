@@ -227,5 +227,25 @@ export class View3D {
         ctx.fillText('Schließfehler: ' + s.closeError.toFixed(2) + ' m', 12, top + 54);
       }
     }
+
+    // Start-/Endfoto (oben rechts) + Übereinstimmung der Schleife.
+    if (scene.frames && scene.frames.start && scene.frames.end) {
+      const f = scene.frames;
+      const tw = 96;
+      const ar = f.start.height / f.start.width || 0.75;
+      const thh = Math.round(tw * ar);
+      const x = W - tw - 12;
+      const top = 22 + (window.innerWidth < 480 ? 24 : 0);
+      ctx.font = '12px -apple-system, sans-serif';
+      ctx.fillStyle = 'rgba(255,255,255,0.85)';
+      ctx.fillText('Start', x, top - 4);
+      ctx.drawImage(f.start, x, top, tw, thh);
+      ctx.fillText('Ende', x, top + thh + 14);
+      ctx.drawImage(f.end, x, top + thh + 18, tw, thh);
+      const pct = Math.round(Math.max(0, f.match) * 100);
+      ctx.fillStyle = pct >= 80 ? COL.marker : (pct >= 60 ? COL.corr : '#ff5a5a');
+      ctx.font = '13px -apple-system, sans-serif';
+      ctx.fillText('Übereinst.: ' + pct + '%', x, top + 2 * thh + 36);
+    }
   }
 }
