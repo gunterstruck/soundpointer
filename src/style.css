@@ -175,38 +175,6 @@ html, body {
   border-radius: 999px;
 }
 
-/* Geführte Messung: Bestätigungs-Dialog */
-#meas-confirm {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 4;
-  background: rgba(0, 0, 0, 0.35);
-}
-#meas-confirm.hidden { display: none; }
-#meas-confirm .mc-card {
-  background: rgba(20, 28, 24, 0.95);
-  border: 1px solid rgba(255, 255, 255, 0.15);
-  border-radius: 16px;
-  padding: 22px;
-  max-width: 86vw;
-  text-align: center;
-}
-#meas-confirm p { margin: 0 0 16px; font-size: 16px; }
-#meas-confirm .mc-row { display: flex; gap: 10px; justify-content: center; }
-#meas-confirm button {
-  appearance: none;
-  border: none;
-  border-radius: 999px;
-  padding: 12px 20px;
-  font-size: 15px;
-  font-weight: 600;
-}
-#btn-meas-confirm { background: var(--accent); color: #04210f; }
-#btn-meas-cancel { background: rgba(255, 255, 255, 0.15); color: #fff; }
-
 /* Unabhängige 3D-Ansicht */
 #view3d {
   position: fixed;
