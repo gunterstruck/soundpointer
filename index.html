@@ -16,8 +16,8 @@
   <!-- Kamerabild (Hintergrund) -->
   <video id="camera" playsinline autoplay muted></video>
 
-  <!-- Overlay-Layer über dem Kamerabild -->
-  <div id="overlay">
+  <!-- Transparenter Overlay-Layer (Variante A) -->
+  <div id="overlay" class="hidden">
     <!-- Marker werden hier dynamisch eingefügt -->
     <div id="markers"></div>
 
@@ -89,32 +89,27 @@
     </div>
   </div>
 
-  <!-- Variante B: Audio-Lokalisierung (eigener Modus) -->
+  <!-- Variante B: Audio-Lokalisierung (eigener AR-Modus) -->
   <div id="modeB" class="hidden">
-    <div class="b-panel">
-      <h2>Lokalisierung (B)</h2>
-      <p class="b-sub">Analyse einer bekannten Zielfrequenz</p>
+    <canvas id="b-canvas"></canvas>
+    <div id="b-crosshair" aria-hidden="true"><div class="ch-h"></div><div class="ch-v"></div><div class="ch-dot"></div></div>
 
-      <label class="b-freq">Zielfrequenz
-        <span><input id="b-freq" type="number" value="3000" min="50" max="20000" step="10" /> Hz</span>
+    <div id="b-hud">
+      <label class="b-freq-inline">f<sub>Ziel</sub>
+        <input id="b-freq" type="number" value="3000" min="50" max="20000" step="10" /> Hz
       </label>
-
-      <div class="b-meter" aria-hidden="true"><div id="b-bar"></div></div>
-      <div id="b-detect">kein Ton</div>
-
-      <div class="b-stats">
-        <div class="row"><span>Pegel</span><b id="b-db">– dB</b></div>
-        <div class="row"><span>Phase</span><b id="b-phase">–</b></div>
-        <div class="row"><span>Fenster</span><b id="b-win">–</b></div>
-        <div class="row"><span>Abtastrate</span><b id="b-sr">–</b></div>
-      </div>
-
-      <p id="b-error" class="err"></p>
-      <div class="b-actions">
-        <button id="b-close" type="button">Schließen</button>
-      </div>
-      <p class="b-hint">Tipp: Mit einem zweiten Handy genau diese Frequenz abspielen – der Pegel sollte deutlich ausschlagen.</p>
+      <div class="row"><span>Pegel</span><b id="b-db">– dB</b></div>
+      <div class="row"><span>Bänder</span><b id="b-count">0</b></div>
+      <div class="row"><span>Status</span><b id="b-detect">kein Ton</b></div>
     </div>
+
+    <p id="b-error" class="err"></p>
+
+    <div id="b-controls">
+      <button id="b-clear" type="button">Bänder löschen</button>
+      <button id="b-close" type="button">Schließen</button>
+    </div>
+    <div id="b-hint">Zielfrequenz abspielen · Handy langsam bewegen (Kreis/seitlich) · Kamera auf die vermutete Quelle</div>
   </div>
 
   <script type="module" src="/src/main.js"></script>
