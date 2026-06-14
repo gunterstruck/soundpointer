@@ -15,7 +15,8 @@
 const COL = {
   cube: 'rgba(255,255,255,0.18)',
   grid: 'rgba(255,255,255,0.08)',
-  path: '#36c6ff',     // Weg des Handys
+  path: '#36c6ff',     // Weg des Handys (roh)
+  corr: '#ff9f43',     // korrigierter Weg (Loop Closure)
   marker: '#19e36a',   // gesetzte Marker
   phone: '#ffd23f',    // aktuelle Handy-Position
   start: 'rgba(255,255,255,0.9)',
@@ -96,11 +97,12 @@ export class View3D {
     ctx.clearRect(0, 0, W, H);
 
     const path = scene.path || [];
+    const corrected = scene.corrected || [];
     const markers = scene.markers || [];
     const phone = scene.phone || null;
 
     // Datenbereich (Bounding Box) inkl. Ursprung.
-    const all = [[0, 0, 0], ...path, ...markers];
+    const all = [[0, 0, 0], ...path, ...corrected, ...markers];
     if (phone) all.push(phone);
     let min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
     for (const p of all) for (let i = 0; i < 3; i++) {
@@ -153,6 +155,15 @@ export class View3D {
       ctx.stroke();
     }
 
+    // Korrigierter Weg (Loop Closure), falls vorhanden.
+    if (corrected.length > 1) {
+      ctx.strokeStyle = COL.corr; ctx.lineWidth = 2;
+      ctx.beginPath();
+      const q0 = project(corrected[0]); ctx.moveTo(q0[0], q0[1]);
+      for (let i = 1; i < corrected.length; i++) { const s = project(corrected[i]); ctx.lineTo(s[0], s[1]); }
+      ctx.stroke();
+    }
+
     // Startpunkt (Ursprung / Kugelmittelpunkt).
     dot([0, 0, 0], COL.start, 4);
     // Marker (im Raum gesetzte Punkte).
@@ -162,11 +173,12 @@ export class View3D {
 
     // Legende.
     ctx.font = '12px -apple-system, sans-serif';
-    ctx.fillStyle = COL.path;   ctx.fillText('— Weg', 12, H - 46);
+    ctx.fillStyle = COL.path;   ctx.fillText('— Weg (roh)', 12, H - 62);
+    if (corrected.length > 1) { ctx.fillStyle = COL.corr; ctx.fillText('— Weg (korrigiert)', 12, H - 46); }
     ctx.fillStyle = COL.marker; ctx.fillText('● Marker', 12, H - 30);
     ctx.fillStyle = COL.phone;  ctx.fillText('● Handy', 12, H - 14);
 
-    // Kennzahlen (oben links): Dauer, Weglänge, Versatz vom Start.
+    // Kennzahlen (oben links): Dauer, Weglänge, Versatz, Schließfehler.
     if (scene.stats) {
       const s = scene.stats;
       ctx.font = '13px -apple-system, sans-serif';
@@ -175,6 +187,10 @@ export class View3D {
       ctx.fillText('Dauer:   ' + s.duration.toFixed(1) + ' s', 12, top);
       ctx.fillText('Weg:     ' + s.length.toFixed(2) + ' m', 12, top + 18);
       ctx.fillText('Versatz: ' + s.dist.toFixed(2) + ' m', 12, top + 36);
+      if (s.closeError) {
+        ctx.fillStyle = COL.corr;
+        ctx.fillText('Schließfehler: ' + s.closeError.toFixed(2) + ' m', 12, top + 54);
+      }
     }
   }
 }
