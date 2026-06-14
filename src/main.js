@@ -114,13 +114,15 @@ function deviceQuaternion(alpha, beta, gamma, screenAngle) {
 }
 
 /**
- * Reine Geräte-zu-Welt-Orientierung (OHNE Kamera-/Bildschirm-Korrektur).
- * Bildet einen Vektor in Geräteachsen (x = rechts, y = oben, z = aus dem
- * Display heraus) in dieselben Weltkoordinaten ab wie oben. Wird benötigt,
- * um die Beschleunigung (Geräteachsen) in die Welt zu drehen.
+ * Geräte-zu-Welt-Orientierung für die Beschleunigung. Nutzt DIESELBE
+ * -90°-x-Korrektur (Q_SCREEN_TO_CAMERA) wie die Marker-Richtung, damit Pfad
+ * und Marker im gleichen Weltkoordinatensystem liegen. KEINE Bildschirm-
+ * Rotation, da die Beschleunigung im Geräte- und nicht im Bildschirm-Frame
+ * geliefert wird.
  */
 function deviceWorldQuaternion(alpha, beta, gamma) {
-  return Quat.fromEulerYXZ(beta * DEG, alpha * DEG, -gamma * DEG);
+  const e = Quat.fromEulerYXZ(beta * DEG, alpha * DEG, -gamma * DEG);
+  return Quat.multiply(e, Q_SCREEN_TO_CAMERA);
 }
 
 /* ============================================================= *
