@@ -222,6 +222,12 @@ const state = {
   // Aufgezeichneter Weg des Handys (Trajektorie) für die 3D-Ansicht / spätere Array-Verarbeitung.
   path: [],      // [{ t, p:[x,y,z] }]
   lastPathT: 0,
+  // Geführte Messung + Drift-Korrektur (Loop Closure).
+  measuring: false,
+  measEndT: 0,
+  awaitingConfirm: false,
+  correctedPath: [], // [[x,y,z]] nach Drift-Korrektur
+  closeError: 0,     // Schließfehler |Ende - Start| (m)
   view: 'ar',    // 'ar' | '3d'
   showDebug: true,
   running: false,
@@ -241,6 +247,7 @@ const PATH_INTERVAL = 33;    // Abtastrate des Wegs (ms) ~30 Hz
 const PATH_MAX = 6000;       // max. gespeicherte Wegpunkte (Ringpuffer)
 const ZUPT_ACC = 0.10;       // Beschleunigung darunter gilt als "ruhig" (m/s²)
 const ZUPT_HOLD = 0.20;      // so lange ruhig -> Geschwindigkeit nullen (s)
+const MEAS_DURATION = 5;     // Dauer der geführten Messung (s)
 
 /* ============================================================= *
  *  Kamera
@@ -503,6 +510,75 @@ function samplePath() {
   if (state.path.length > PATH_MAX) state.path.shift();
 }
 
+/* ---- Geführte Messung mit Drift-Korrektur (Loop Closure) ---- */
+
+function startMeasurement() {
+  if (!state.motionSupported) { setStatus('Kein Bewegungssensor verfügbar.'); return; }
+  // Frisch zentrieren und Pfad/Korrektur zurücksetzen.
+  recenter();
+  state.correctedPath = [];
+  state.closeError = 0;
+  state.awaitingConfirm = false;
+  state.measuring = true;
+  state.measEndT = performance.now() + MEAS_DURATION * 1000;
+  document.getElementById('countdown').classList.remove('hidden');
+  document.getElementById('meas-confirm').classList.add('hidden');
+}
+
+// Pro Frame: Countdown anzeigen / Messfenster beenden.
+function updateMeasurement() {
+  if (!state.measuring) return;
+  const remain = (state.measEndT - performance.now()) / 1000;
+  const cd = document.getElementById('countdown');
+  if (remain > 0) {
+    const n = Math.ceil(remain);
+    cd.querySelector('.cd-num').textContent = String(n);
+    cd.querySelector('.cd-hint').textContent =
+      remain <= MEAS_DURATION * 0.5 ? '… zurück zum Start' : 'im Kreis bewegen';
+  } else {
+    // Messfenster zu Ende -> Bestätigung anfordern.
+    state.measuring = false;
+    cd.classList.add('hidden');
+    state.awaitingConfirm = true;
+    document.getElementById('meas-confirm').classList.remove('hidden');
+  }
+}
+
+// Nutzer bestätigt: er ist wieder ~am Start -> Drift linear über die Zeit verteilen.
+function confirmMeasurement() {
+  state.awaitingConfirm = false;
+  document.getElementById('meas-confirm').classList.add('hidden');
+
+  const path = state.path;
+  if (path.length >= 2) {
+    const t0 = path[0].t, tN = path[path.length - 1].t;
+    const span = (tN - t0) || 1;
+    const start = path[0].p;
+    const end = path[path.length - 1].p;
+    const err = sub3(end, start); // aufsummierter Drift (Ende soll = Start sein)
+    state.closeError = Math.hypot(err[0], err[1], err[2]);
+    // korrigiert(i) = (p_i - start) - err * (t_i - t0)/span  -> Start und Ende bei 0
+    state.correctedPath = path.map((s) => {
+      const f = (s.t - t0) / span;
+      return [
+        s.p[0] - start[0] - err[0] * f,
+        s.p[1] - start[1] - err[1] * f,
+        s.p[2] - start[2] - err[2] * f,
+      ];
+    });
+    setStatus(`Korrigiert · Schließfehler ${state.closeError.toFixed(2)} m über ${(span / 1000).toFixed(1)} s verteilt.`);
+    open3D();
+  } else {
+    setStatus('Zu wenig Wegdaten für eine Korrektur.');
+  }
+}
+
+function cancelMeasurement() {
+  state.awaitingConfirm = false;
+  document.getElementById('meas-confirm').classList.add('hidden');
+  setStatus('Messung verworfen.');
+}
+
 // Kennzahlen des aufgezeichneten Wegs.
 function pathStats() {
   const path = state.path;
@@ -520,11 +596,14 @@ function pathStats() {
 
 // Szene für das 3D-Modul.
 function getScene() {
+  const stats = pathStats();
+  stats.closeError = state.closeError;
   return {
     path: state.path.map((s) => s.p),
+    corrected: state.correctedPath,
     markers: state.markers.map((m) => m.pos),
     phone: state.position.slice(),
-    stats: pathStats(),
+    stats,
   };
 }
 
@@ -535,6 +614,7 @@ function getScene() {
 function render() {
   if (!state.running) return;
   samplePath();
+  updateMeasurement();
 
   if (state.view === '3d') {
     if (view3d) view3d.draw(getScene());
@@ -708,6 +788,9 @@ function init() {
   document.getElementById('btn-stop').addEventListener('click', stop);
   document.getElementById('btn-calibrate').addEventListener('click', startCalibration);
   document.getElementById('btn-center').addEventListener('click', recenter);
+  document.getElementById('btn-measure').addEventListener('click', startMeasurement);
+  document.getElementById('btn-meas-confirm').addEventListener('click', confirmMeasurement);
+  document.getElementById('btn-meas-cancel').addEventListener('click', cancelMeasurement);
   document.getElementById('btn-clear').addEventListener('click', clearMarkers);
   document.getElementById('btn-3d').addEventListener('click', open3D);
   document.getElementById('btn-view-close').addEventListener('click', close3D);

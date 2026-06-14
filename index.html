@@ -47,9 +47,27 @@
       <button id="btn-stop" type="button">Stopp</button>
       <button id="btn-calibrate" type="button">Kalibrieren</button>
       <button id="btn-center" type="button">Zentrieren</button>
+      <button id="btn-measure" type="button">Messung 5s</button>
       <button id="btn-clear" type="button">Marker löschen</button>
       <button id="btn-3d" type="button">3D-Ansicht</button>
       <button id="btn-debug" type="button">Debug aus</button>
+    </div>
+
+    <!-- Geführte Messung: Countdown -->
+    <div id="countdown" class="hidden" aria-hidden="true">
+      <div class="cd-num">5</div>
+      <div class="cd-hint">im Kreis bewegen</div>
+    </div>
+
+    <!-- Geführte Messung: Bestätigung am Ende -->
+    <div id="meas-confirm" class="hidden">
+      <div class="mc-card">
+        <p>Bist du wieder ungefähr am <b>Ausgangspunkt</b>?</p>
+        <div class="mc-row">
+          <button id="btn-meas-confirm" type="button">Ja, korrigieren</button>
+          <button id="btn-meas-cancel" type="button">Verwerfen</button>
+        </div>
+      </div>
     </div>
 
     <!-- Hinweis / Statusmeldung -->
