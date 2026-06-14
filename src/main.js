@@ -210,6 +210,8 @@ const state = {
   gravityFree: false,          // liefert das Gerät schwerkraftfreie Beschleunigung?
   accMag: 0,                   // aktueller Betrag |a| (m/s²) – zur Überprüfung
   lastMotionT: 0,
+  stillTime: 0,                // wie lange die Beschleunigung schon klein ist (s)
+  zupt: false,                 // Stillstand erkannt -> Geschwindigkeit genullt
   // Kalibrierung: gemittelter Sensor-Offset (Bias) bei stillem Handy.
   accBias: [0, 0, 0],
   calibrating: false,
@@ -236,6 +238,8 @@ const VEL_DAMPING = 1.0;     // 1.0 = aus; <1 bremst Geschwindigkeit (gegen Wegl
 const MAX_DT = 0.05;         // max. Zeitschritt pro Sample (s), gegen Sprünge
 const PATH_INTERVAL = 33;    // Abtastrate des Wegs (ms) ~30 Hz
 const PATH_MAX = 6000;       // max. gespeicherte Wegpunkte (Ringpuffer)
+const ZUPT_ACC = 0.10;       // Beschleunigung darunter gilt als "ruhig" (m/s²)
+const ZUPT_HOLD = 0.20;      // so lange ruhig -> Geschwindigkeit nullen (s)
 
 /* ============================================================= *
  *  Kamera
@@ -336,10 +340,20 @@ function onMotion(ev) {
   if (dt <= 0) return;
   if (dt > MAX_DT) dt = MAX_DT;
 
-  // Bias abziehen, dann Totzone (Rauschunterdrückung).
+  // Bias abziehen (Vorzeichen bleibt erhalten!).
   const b = state.accBias;
+  const corr = [raw[0] - b[0], raw[1] - b[1], raw[2] - b[2]];
+  const corrMag = Math.hypot(corr[0], corr[1], corr[2]);
+
+  // ZUPT (Zero-Velocity Update): bleibt die Beschleunigung lange genug klein,
+  // steht das Handy -> Geschwindigkeit auf 0 zwingen. Das verhindert, dass nach
+  // Beschleunigen/Bremsen eine Rest-Geschwindigkeit den Punkt weiterlaufen lässt.
+  if (corrMag < ZUPT_ACC) state.stillTime += dt; else state.stillTime = 0;
+  state.zupt = state.stillTime >= ZUPT_HOLD;
+
+  // Totzone (nur kleine Rest-Rausch-Werte auf 0), Vorzeichen bleibt erhalten.
   const dz = (v) => (Math.abs(v) < ACC_DEADZONE ? 0 : v);
-  const aDev = [dz(raw[0] - b[0]), dz(raw[1] - b[1]), dz(raw[2] - b[2])];
+  const aDev = [dz(corr[0]), dz(corr[1]), dz(corr[2])];
 
   // In Weltkoordinaten drehen und doppelt integrieren.
   const aW = Quat.rotateVec(state.devQuat, aDev);
@@ -347,6 +361,7 @@ function onMotion(ev) {
     state.position[i] += state.velocity[i] * dt + 0.5 * aW[i] * dt * dt;
     state.velocity[i] = (state.velocity[i] + aW[i] * dt) * VEL_DAMPING;
   }
+  if (state.zupt) state.velocity = [0, 0, 0];
 }
 
 // Bias-Kalibrierung: 2 s lang stillhalten, Offset mitteln und künftig abziehen.
@@ -535,7 +550,7 @@ function render() {
 
 const dbg = {};
 function cacheDom() {
-  ['source', 'azimuth', 'pitch', 'roll', 'amag', 'pos', 'dist', 'count'].forEach((k) => {
+  ['source', 'azimuth', 'pitch', 'roll', 'amag', 'speed', 'pos', 'dist', 'count'].forEach((k) => {
     dbg[k] = document.getElementById('dbg-' + k);
   });
 }
@@ -556,6 +571,15 @@ function updateDebug() {
     dbg.amag.textContent = state.accMag.toFixed(3) + ' m/s² · ' + tag;
   } else {
     dbg.amag.textContent = 'n/a';
+  }
+
+  // Geschwindigkeit + ZUPT-Status (zur Beurteilung der Stillstandserkennung).
+  if (state.motionSupported) {
+    const v = state.velocity;
+    const sp = Math.hypot(v[0], v[1], v[2]) * 100;
+    dbg.speed.textContent = sp.toFixed(1) + ' cm/s' + (state.zupt ? ' · still ✓' : '');
+  } else {
+    dbg.speed.textContent = 'n/a';
   }
 
   // Positions-Experiment: Versatz vom Startpunkt (in cm) + Gesamtdistanz.
