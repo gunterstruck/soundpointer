@@ -17,6 +17,7 @@ export class LevelMeter {
     this.td = null; this.fd = null; this.running = false;
     this.bandMax = 1e-9;          // langsam gleitendes Maximum zur Normalisierung
     this.targetFreq = 0;          // 0 = Breitband (2–6 kHz), >0 = schmalbandig
+    this.scoreEma = 0;            // geglätteter Score (ruhiger im Lärm)
     this.devLabel = ''; this.channels = 1;
     this.dbHist = [];             // für AGC-Verdacht
   }
@@ -54,7 +55,9 @@ export class LevelMeter {
     if (this.ctx.state === 'suspended') { try { await this.ctx.resume(); } catch (e) { /* ignore */ } }
     this.source = this.ctx.createMediaStreamSource(this.stream);
     this.analyser = this.ctx.createAnalyser();
-    this.analyser.fftSize = 2048;
+    // Feine Frequenzauflösung (~6 Hz/Bin bei 48 kHz): trennt einen Störton
+    // sauber vom breitbandigen Industrierauschen.
+    this.analyser.fftSize = 8192;
     this.analyser.smoothingTimeConstant = 0;
     this.source.connect(this.analyser);
     this.td = new Float32Array(this.analyser.fftSize);
@@ -78,7 +81,7 @@ export class LevelMeter {
     if (this.targetFreq > 0) {
       // Schmalbandig: Ton-Prominenz = mittlere Leistung am Ziel / im Nachbarband.
       const f0 = this.targetFreq;
-      const bw = Math.max(1.5 * binHz, 50);
+      const bw = Math.max(2 * binHz, 30); // enges Zielband (~±30 Hz)
       let band = 0, nb = 0, guard = 0, ng = 0, total = 0;
       for (let k = 1; k < this.fd.length; k++) {
         const p = Math.pow(10, this.fd[k] / 10);
@@ -108,7 +111,9 @@ export class LevelMeter {
 
     const levelDb = 20 * Math.log10(rms + 1e-7);
     this.bandMax = Math.max(scoreRaw, this.bandMax * 0.997); // langsamer Zerfall
-    const score = Math.max(0, Math.min(1, scoreRaw / (this.bandMax + 1e-12)));
+    const scoreNow = Math.max(0, Math.min(1, scoreRaw / (this.bandMax + 1e-12)));
+    this.scoreEma += (scoreNow - this.scoreEma) * 0.35; // leichte zeitliche Glättung
+    const score = this.scoreEma;
     const quality = (clip ? 0.4 : 1) * Math.max(0, Math.min(1, (levelDb + 70) / 45));
 
     // AGC-Verdacht: bei echtem Signal sollte der Pegel schwanken.
