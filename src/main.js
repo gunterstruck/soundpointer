@@ -930,7 +930,6 @@ let modeBRaf = 0;
 let bCtx = null;
 
 const SOUND_C = 343;            // Schallgeschwindigkeit (m/s)
-const B_WIN_MS = 160;           // Abstand der Messfenster (ms)
 const B_SNR_THRESH = 0.45;      // Verhältnis Ziel/Gesamt – Ton gilt als erkannt (distanzunabhängig)
 const B_MAG_FLOOR = 2e-4;       // absolute Untergrenze (~ -74 dB) gegen Stille/Numerik
 const B_MIN_BASELINE = 0.04;    // Mindest-Bewegungsabstand für ein Paar (m)
@@ -940,13 +939,12 @@ const B_BAND_LIFE = 6000;       // Lebensdauer eines Bandes (ms)
 const B_MAX_BANDS = 60;
 
 function bTonePresent(l) {
-  return !!l && l.snr > B_SNR_THRESH && l.magnitude > B_MAG_FLOOR;
+  return !!l && l.snr > B_SNR_THRESH && l.mag > B_MAG_FLOOR;
 }
 
 const bState = {
-  windows: [],   // { t, fwd:[x,y,z], pos:[x,y,z], amp, phase, db }
-  bands: [],     // { az, el, halfWidth(rad), quality, t0 }
-  lastWinT: 0,
+  windows: [],   // { t, pos:[x,y,z], phase, snr, present }
+  bands: [],     // { axis:[x,y,z], cosA, halfWidth(rad), quality, t0 }
 };
 
 function anyPerp(a) {
@@ -961,13 +959,12 @@ function anyPerp(a) {
 function bCalibrate() { bState.windows.length = 0; startCalibration(); }
 function bRecenter() { recenter(); bState.windows.length = 0; }
 
-function bCollectWindow(now, l) {
-  if (state.calibrating) return; // während der Kalibrierung keine Fenster sammeln
-  if (now - bState.lastWinT < B_WIN_MS) return;
-  bState.lastWinT = now;
+// Wird je Audioblock (kohärente Lock-in-Messung) aufgerufen.
+function bOnAudioWindow(l) {
+  if (!state.modeB || state.calibrating) return;
+  const now = performance.now();
   const present = bTonePresent(l);
-  const fwd = Quat.rotateVec(state.quat, [0, 0, -1]);
-  bState.windows.push({ t: now, fwd, pos: state.position.slice(), amp: l.magnitude, phase: l.phase, snr: l.snr, present });
+  bState.windows.push({ t: now, pos: state.position.slice(), phase: l.phase, snr: l.snr, present });
   while (bState.windows.length > 80) bState.windows.shift();
   if (present) bFormPair(now, l);
 }
@@ -987,11 +984,11 @@ function bFormPair(now, cur) {
 
   const f = tone.freq;
   const lambda = SOUND_C / f;
-  const dt = (A.t - best.t) / 1000;
-  // Phasendifferenz um die normale Zeit-Schwingung des Tons korrigieren.
-  let dphi = A.phase - best.phase - 2 * Math.PI * f * dt;
+  // Kohärente Phase: der Träger ist durch die Lock-in-Demodulation bereits
+  // entfernt -> KEIN 2π·f·Δt-Term mehr. Differenz = reine Laufzeit-Information.
+  let dphi = A.phase - best.phase;
   dphi = Math.atan2(Math.sin(dphi), Math.cos(dphi)); // auf [-π, π]
-  const d = (dphi / (2 * Math.PI)) * lambda;          // Laufzeitdifferenz-Strecke (m)
+  const d = (state.bSign || 1) * (dphi / (2 * Math.PI)) * lambda; // Laufzeitdifferenz-Strecke (m)
   if (Math.abs(d) > bestBase) return;                 // physikalisch unmöglich -> verwerfen
 
   const bvec = [A.pos[0] - best.pos[0], A.pos[1] - best.pos[1], A.pos[2] - best.pos[2]];
@@ -1023,7 +1020,7 @@ function cross3(a, b) {
 function bDrawHotspot(band, invQ, fwd, fade) {
   const { tanX } = getFov();
   const W = window.innerWidth;
-  const cosA = band.cosA * (state.bSign || 1);
+  const cosA = band.cosA; // Vorzeichen ist bereits bei der Band-Bildung berücksichtigt
   const sinA = Math.sqrt(Math.max(0, 1 - cosA * cosA));
   const a = band.axis;
   const dotfa = fwd[0] * a[0] + fwd[1] * a[1] + fwd[2] * a[2];
@@ -1049,7 +1046,7 @@ function bDrawConeBand(band, invQ, fade) {
   const { tanX } = getFov();
   const W = window.innerWidth, H = window.innerHeight;
   const a = band.axis;
-  const cosA = band.cosA * (state.bSign || 1);
+  const cosA = band.cosA; // Vorzeichen ist bereits bei der Band-Bildung berücksichtigt
   const sinA = Math.sqrt(Math.max(0, 1 - cosA * cosA));
   const p = anyPerp(a);
   const q = cross3(a, p);
@@ -1138,6 +1135,7 @@ async function startModeB() {
     state.positionFrozen = false;
     bClear();
     tone = new TargetTone();
+    tone.onWindow = bOnAudioWindow; // Fenster kohärent je Audioblock sammeln
     await tone.start(freq); // Mikrofon-Freigabe (Nutzergeste vom Button-Klick)
     state.modeB = true;
     modeBLoop();
@@ -1151,9 +1149,8 @@ async function startModeB() {
 function modeBLoop() {
   if (!state.modeB) return;
   const now = performance.now();
-  const l = tone ? tone.analyze() : null;
+  const l = tone ? tone.latest : null; // Daten kommen kohärent aus dem Audio-Callback
   if (l) {
-    bCollectWindow(now, l);
     document.getElementById('b-db').textContent =
       (l.db <= -119 ? '–' : l.db.toFixed(1)) + ' dB · SNR ' + l.snr.toFixed(1);
     const det = document.getElementById('b-detect');
