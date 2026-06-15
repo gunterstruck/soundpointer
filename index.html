@@ -94,13 +94,14 @@
   <div id="modeB" class="hidden">
     <canvas id="b-canvas"></canvas>
     <div id="b-crosshair" aria-hidden="true"><div class="ch-h"></div><div class="ch-v"></div><div class="ch-dot"></div></div>
+    <div id="b-countdown" class="hidden" aria-hidden="true"><div class="cd-num">5</div><div class="cd-hint">im Kreis bewegen</div></div>
 
     <div id="b-hud">
       <label class="b-freq-inline">f<sub>Ziel</sub>
         <input id="b-freq" type="number" value="500" min="50" max="20000" step="10" /> Hz
       </label>
       <div class="row"><span>Pegel</span><b id="b-db">– dB</b></div>
-      <div class="row"><span>Bänder</span><b id="b-count">0</b></div>
+      <div class="row"><span>Messpunkte</span><b id="b-count">0</b></div>
       <div class="row"><span>Schätzung</span><b id="b-peak">–</b></div>
       <div class="row"><span>Sensor Hz</span><b id="b-rate">–</b></div>
       <div class="row"><span>Status</span><b id="b-detect">kein Ton</b></div>
@@ -109,14 +110,14 @@
     <p id="b-error" class="err"></p>
 
     <div id="b-controls">
-      <button id="b-mode" type="button">Modus: Band</button>
+      <button id="b-measure" type="button">Messung 5s</button>
       <button id="b-sign" type="button">±</button>
       <button id="b-calibrate" type="button">Kalibrieren</button>
       <button id="b-center" type="button">Zentrieren</button>
-      <button id="b-clear" type="button">Bänder löschen</button>
+      <button id="b-clear" type="button">Löschen</button>
       <button id="b-close" type="button">Schließen</button>
     </div>
-    <div id="b-hint">Tiefe Frequenz (400–800 Hz) · in VERSCHIEDENE Richtungen bewegen (seitlich, hoch/runter, Bogen) · grüner Kreis = geschätzte Quelle</div>
+    <div id="b-hint">„Messung 5s" drücken · im KREIS bewegen · bei 0 zurück zum Start (Drift-Korrektur) · grüner Kreis = geschätzte Quelle</div>
   </div>
 
   <script type="module" src="/src/main.js"></script>
