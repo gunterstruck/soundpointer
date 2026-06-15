@@ -253,9 +253,6 @@ const state = {
   view: 'ar',    // 'ar' | '3d'
   parallax: false, // Marker mit Positions-Parallaxe (6DoF) statt reiner Richtung (3DoF)?
   modeB: false,  // Variante-B-Modus aktiv?
-  bMeasuring: false,
-  bMeasEndT: 0,
-  bSign: 1,      // Vorzeichen der Laufzeitdifferenz (Debug-Umschalter)
   showDebug: true,
   running: false,
   sensorsInitialized: false,
@@ -400,16 +397,6 @@ function processAccel(ax, ay, az, gravityFree, intervalMs) {
   // steht das Handy -> Geschwindigkeit auf 0 zwingen.
   if (corrMag < ZUPT_ACC) state.stillTime += dt; else state.stillTime = 0;
   state.zupt = state.stillTime >= ZUPT_HOLD;
-
-  // Adaptive Drift-Korrektur: bei erkanntem Stillstand sollte die (schwerkraftfreie)
-  // Beschleunigung 0 sein -> jeder Rest ist Bias. Bias langsam nachführen, damit die
-  // Position über die Zeit nicht wegläuft (ersetzt häufiges Neu-Kalibrieren).
-  if (state.zupt) {
-    const k = Math.min(0.1, dt / 0.5);
-    state.accBias[0] += corr[0] * k;
-    state.accBias[1] += corr[1] * k;
-    state.accBias[2] += corr[2] * k;
-  }
 
   // Totzone (nur kleine Rest-Rausch-Werte auf 0), Vorzeichen bleibt erhalten.
   const dz = (v) => (Math.abs(v) < ACC_DEADZONE ? 0 : v);
@@ -941,32 +928,23 @@ let modeBRaf = 0;
 let bCtx = null;
 
 const SOUND_C = 343;            // Schallgeschwindigkeit (m/s)
+const B_WIN_MS = 160;           // Abstand der Messfenster (ms)
 const B_SNR_THRESH = 0.45;      // Verhältnis Ziel/Gesamt – Ton gilt als erkannt (distanzunabhängig)
 const B_MAG_FLOOR = 2e-4;       // absolute Untergrenze (~ -74 dB) gegen Stille/Numerik
 const B_MIN_BASELINE = 0.04;    // Mindest-Bewegungsabstand für ein Paar (m)
 const B_MAX_BASELINE = 1.5;     // unplausibel großer Abstand (z. B. nach Zentrieren) -> verwerfen
 const B_MAX_PAIR_DT = 1800;     // max. Zeitabstand eines Paares (ms)
-const B_BAND_LIFE = 3000;       // Lebensdauer eines Bandes (ms) – schnelles Verblassen
+const B_BAND_LIFE = 6000;       // Lebensdauer eines Bandes (ms)
 const B_MAX_BANDS = 60;
-// Voting-Akkumulator (Richtungs-Gitter) -> stabiles Zentrum aus vielen Bändern.
-const B_NAZ = 72, B_NEL = 37;   // Azimut 5°, Elevation 5°
-const B_ACCUM_TAU = 3.0;        // Zerfallszeit des Akkumulators (s)
-const B_PEAK_MIN = 0.6;         // Mindest-Peakwert, damit ein Zentrum gilt
-const B_PEAK_CONF = 4.0;        // Peak muss mind. N× über dem Mittel liegen
-const B_MEAS_DURATION = 5;      // Dauer der geführten Kreismessung (s)
 
 function bTonePresent(l) {
-  return !!l && l.snr > B_SNR_THRESH && l.mag > B_MAG_FLOOR;
+  return !!l && l.snr > B_SNR_THRESH && l.magnitude > B_MAG_FLOOR;
 }
 
 const bState = {
-  measWindows: [], // während der Messung: { t, pos, phase, snr, present }
-  measCorr: [],    // nach Loop-Closure: { cpos, phase, snr }
-  accum: new Float32Array(B_NAZ * B_NEL), // Richtungs-Voting
-  peakVec: null,   // geschätzte Quellrichtung (Weltvektor)
-  peakConf: 0,
-  msg: '',
-  msgUntil: 0,
+  windows: [],   // { t, fwd:[x,y,z], pos:[x,y,z], amp, phase, db }
+  bands: [],     // { az, el, halfWidth(rad), quality, t0 }
+  lastWinT: 0,
 };
 
 function anyPerp(a) {
@@ -978,142 +956,77 @@ function anyPerp(a) {
 
 // Kalibrieren/Zentrieren im B-Modus: Funktionen sind geteilt; Fensterpuffer leeren,
 // damit Positionssprünge keine Geister-Bänder erzeugen.
-function bCalibrate() { bState.measWindows = []; startCalibration(); }
-function bRecenter() { recenter(); bState.measWindows = []; }
+function bCalibrate() { bState.windows.length = 0; startCalibration(); }
+function bRecenter() { recenter(); bState.windows.length = 0; }
 
-// Wird je Audioblock (kohärente Lock-in-Messung) aufgerufen.
-// Während der geführten Messung Fenster sammeln (Rohposition + kohärente Phase).
-function bOnAudioWindow(l) {
-  if (!state.modeB || state.calibrating || !state.bMeasuring) return;
-  bState.measWindows.push({
-    t: performance.now(),
-    pos: state.position.slice(),
-    phase: l.phase,
-    snr: l.snr,
-    present: bTonePresent(l),
-  });
+function bCollectWindow(now, l) {
+  if (state.calibrating) return; // während der Kalibrierung keine Fenster sammeln
+  if (now - bState.lastWinT < B_WIN_MS) return;
+  bState.lastWinT = now;
+  const present = bTonePresent(l);
+  const fwd = Quat.rotateVec(state.quat, [0, 0, -1]);
+  bState.windows.push({ t: now, fwd, pos: state.position.slice(), amp: l.magnitude, phase: l.phase, snr: l.snr, present });
+  while (bState.windows.length > 80) bState.windows.shift();
+  if (present) bFormPair(now, l);
 }
 
-// Ein Paar (zwei driftkorrigierte Messpunkte) -> Kegel ins Gitter eintragen.
-function bPairToAccum(a, b) {
-  const base = Math.hypot(a.cpos[0] - b.cpos[0], a.cpos[1] - b.cpos[1], a.cpos[2] - b.cpos[2]);
-  if (base < B_MIN_BASELINE || base > B_MAX_BASELINE) return;
-  const lambda = SOUND_C / tone.freq;
-  let dphi = a.phase - b.phase;
-  dphi = Math.atan2(Math.sin(dphi), Math.cos(dphi)); // [-π, π]
-  const d = (state.bSign || 1) * (dphi / (2 * Math.PI)) * lambda;
-  if (Math.abs(d) > base) return; // physikalisch unmöglich
-  const axis = normalize3([a.cpos[0] - b.cpos[0], a.cpos[1] - b.cpos[1], a.cpos[2] - b.cpos[2]]);
-  const cosA = Math.max(-1, Math.min(1, d / base));
-  const baseQ = Math.min(1, base / (lambda * 0.5));
-  const snr = Math.min(a.snr, b.snr);
-  const sigQ = Math.min(1, Math.max(0, (snr - B_SNR_THRESH) / (1.4 - B_SNR_THRESH)));
-  bAddConeToAccum(axis, cosA, Math.max(0.05, baseQ * sigQ));
-}
-
-// Aus den driftkorrigierten Messpunkten ALLE geeigneten Paare verrechnen + Peak finden.
-function bRecompute() {
-  bState.accum.fill(0);
-  const ws = bState.measCorr || [];
-  for (let i = 0; i < ws.length; i++) {
-    for (let j = i + 1; j < ws.length; j++) bPairToAccum(ws[i], ws[j]);
+// Aus dem neuesten Fenster + einem geeigneten früheren Fenster ein Band bilden.
+function bFormPair(now, cur) {
+  const A = bState.windows[bState.windows.length - 1];
+  let best = null, bestBase = 0;
+  for (let i = bState.windows.length - 2; i >= 0; i--) {
+    const w = bState.windows[i];
+    if (now - w.t > B_MAX_PAIR_DT) break;
+    if (!w.present) continue;
+    const base = Math.hypot(A.pos[0] - w.pos[0], A.pos[1] - w.pos[1], A.pos[2] - w.pos[2]);
+    if (base > bestBase) { bestBase = base; best = w; }
   }
-  const acc = bState.accum;
-  let maxV = 0, maxIdx = -1, sum = 0;
-  for (let k = 0; k < acc.length; k++) { sum += acc[k]; if (acc[k] > maxV) { maxV = acc[k]; maxIdx = k; } }
-  const mean = sum / acc.length;
-  if (maxIdx >= 0 && maxV > B_PEAK_MIN && maxV > B_PEAK_CONF * mean) {
-    const ej = Math.floor(maxIdx / B_NAZ), ai = maxIdx % B_NAZ;
-    bState.peakVec = sphericalToVector(ai * 5 + 2.5, -90 + ej * 5);
-    bState.peakConf = maxV / (mean + 1e-6);
-  } else {
-    bState.peakVec = null;
-    bState.peakConf = 0;
-  }
-}
+  if (!best || bestBase < B_MIN_BASELINE || bestBase > B_MAX_BASELINE) return;
 
-function setBStatus(msg) { bState.msg = msg; bState.msgUntil = performance.now() + 3000; }
+  const f = tone.freq;
+  const lambda = SOUND_C / f;
+  const dt = (A.t - best.t) / 1000;
+  // Phasendifferenz um die normale Zeit-Schwingung des Tons korrigieren.
+  let dphi = A.phase - best.phase - 2 * Math.PI * f * dt;
+  dphi = Math.atan2(Math.sin(dphi), Math.cos(dphi)); // auf [-π, π]
+  const d = (dphi / (2 * Math.PI)) * lambda;          // Laufzeitdifferenz-Strecke (m)
+  if (Math.abs(d) > bestBase) return;                 // physikalisch unmöglich -> verwerfen
 
-// Geführte 5-Sekunden-Kreismessung starten.
-function bStartMeasurement() {
-  if (!state.motionSupported) { setBStatus('Kein Bewegungssensor verfügbar'); return; }
-  state.position = [0, 0, 0]; state.velocity = [0, 0, 0]; state.lastMotionT = 0; state.positionFrozen = false;
-  bClear();
-  state.bMeasuring = true;
-  state.bMeasEndT = performance.now() + B_MEAS_DURATION * 1000;
-}
+  const bvec = [A.pos[0] - best.pos[0], A.pos[1] - best.pos[1], A.pos[2] - best.pos[2]];
+  const bhat = normalize3(bvec);
+  const cosT = Math.max(-1, Math.min(1, d / bestBase));
+  const sinT = Math.sqrt(Math.max(0, 1 - cosT * cosT));
 
-// 5 s vorbei: Drift per Loop-Closure (Start≈Ende) entfernen, dann verrechnen.
-function bFinishMeasurement() {
-  state.bMeasuring = false;
-  const ws = bState.measWindows.filter((w) => w.present);
-  if (ws.length < 6) { setBStatus('Messung zu schwach – Ton lauter/näher, neu messen'); bState.measWindows = []; return; }
-  const t0 = ws[0].t, span = (ws[ws.length - 1].t - t0) || 1;
-  const start = ws[0].pos, end = ws[ws.length - 1].pos;
-  const drift = [end[0] - start[0], end[1] - start[1], end[2] - start[2]];
-  bState.measCorr = ws.map((w) => {
-    const fr = (w.t - t0) / span; // Drift linear über die Zeit herausrechnen
-    return {
-      cpos: [
-        w.pos[0] - start[0] - drift[0] * fr,
-        w.pos[1] - start[1] - drift[1] * fr,
-        w.pos[2] - start[2] - drift[2] * fr,
-      ],
-      phase: w.phase, snr: w.snr,
-    };
-  });
-  bState.measWindows = [];
-  bRecompute();
-  setBStatus(bState.peakVec ? 'Fertig · Zentrum gefunden' : 'Fertig · kein klares Zentrum');
+  // Aus dem Lösungs-Kegel die Richtung nahe der Blickrichtung wählen.
+  const fwd = A.fwd;
+  const dotfa = fwd[0] * bhat[0] + fwd[1] * bhat[1] + fwd[2] * bhat[2];
+  let fperp = [fwd[0] - dotfa * bhat[0], fwd[1] - dotfa * bhat[1], fwd[2] - dotfa * bhat[2]];
+  const fpl = Math.hypot(fperp[0], fperp[1], fperp[2]);
+  fperp = fpl < 1e-4 ? anyPerp(bhat) : [fperp[0] / fpl, fperp[1] / fpl, fperp[2] / fpl];
+  const u = [
+    cosT * bhat[0] + sinT * fperp[0],
+    cosT * bhat[1] + sinT * fperp[1],
+    cosT * bhat[2] + sinT * fperp[2],
+  ];
+  const { azimuth, elevation } = vectorToSpherical(u);
+
+  // Qualität: längere Basis und klareres Signal (SNR) -> schmaleres, sichereres Band.
+  const baseQ = Math.min(1, bestBase / (lambda * 0.5));
+  const sigQ = Math.min(1, Math.max(0, (cur.snr - B_SNR_THRESH) / (1.4 - B_SNR_THRESH)));
+  const quality = Math.max(0.08, baseQ * sigQ);
+  const halfWidth = (10 + 35 * (1 - quality)) * DEG; // 10°..45°
+
+  bState.bands.push({ az: azimuth, el: elevation, halfWidth, quality, t0: now });
+  while (bState.bands.length > B_MAX_BANDS) bState.bands.shift();
 }
 
 function bClear() {
-  bState.measWindows = [];
-  bState.measCorr = [];
-  bState.accum.fill(0);
-  bState.peakVec = null;
-  bState.peakConf = 0;
+  bState.bands.length = 0;
+  bState.windows.length = 0;
 }
 
-function cross3(a, b) {
-  return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
-}
-
-// Kegel (gesamte Lösungsmenge) gewichtet ins Richtungs-Gitter eintragen.
-function bAddConeToAccum(a, cosA, weight) {
-  const sinA = Math.sqrt(Math.max(0, 1 - cosA * cosA));
-  const p = anyPerp(a), q = cross3(a, p);
-  const STEPS = 200;
-  for (let i = 0; i < STEPS; i++) {
-    const th = (i / STEPS) * 2 * Math.PI;
-    const ct = Math.cos(th), st = Math.sin(th);
-    const u0 = cosA * a[0] + sinA * (ct * p[0] + st * q[0]);
-    const u1 = cosA * a[1] + sinA * (ct * p[1] + st * q[1]);
-    const u2 = cosA * a[2] + sinA * (ct * p[2] + st * q[2]);
-    const { azimuth, elevation } = vectorToSpherical([u0, u1, u2]);
-    const ai = Math.min(B_NAZ - 1, Math.floor(((azimuth % 360) + 360) % 360 / 5));
-    const ej = Math.min(B_NEL - 1, Math.max(0, Math.round((elevation + 90) / 5)));
-    bState.accum[ej * B_NAZ + ai] += weight;
-  }
-}
-
-// Weiche Glüh-Scheibe (einmaliges Sprite) für die Heatmap-/Kreis-Optik.
-let bDotSprite = null;
-function bGetDot() {
-  if (bDotSprite) return bDotSprite;
-  const s = 64;
-  const c = document.createElement('canvas'); c.width = s; c.height = s;
-  const cx = c.getContext('2d');
-  const g = cx.createRadialGradient(s / 2, s / 2, 0, s / 2, s / 2, s / 2);
-  g.addColorStop(0, 'rgba(255,150,70,0.95)');
-  g.addColorStop(0.5, 'rgba(255,100,40,0.45)');
-  g.addColorStop(1, 'rgba(255,90,40,0)');
-  cx.fillStyle = g; cx.fillRect(0, 0, s, s);
-  bDotSprite = c; return c;
-}
-
-// Ergebnis zeichnen: Heatmap aus weichen Kreisen (raumstabil) + grünes Zentrum.
-function bRenderResult() {
+// Raumstabile Konfidenzbänder über dem Kamerabild zeichnen (Überlagerung = Heatmap).
+function bRenderBands(now) {
   const cv = document.getElementById('b-canvas');
   const dpr = window.devicePixelRatio || 1;
   const W = window.innerWidth, H = window.innerHeight;
@@ -1121,44 +1034,48 @@ function bRenderResult() {
   bCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
   bCtx.clearRect(0, 0, W, H);
 
+  const { tanX } = getFov();
   const invQ = Quat.conjugate(state.quat);
-  const acc = bState.accum;
-  let maxV = 0;
-  for (let k = 0; k < acc.length; k++) if (acc[k] > maxV) maxV = acc[k];
-
-  if (maxV > 0) {
-    const dot = bGetDot();
-    const r = Math.max(26, W * 0.07);
-    bCtx.globalCompositeOperation = 'lighter';
-    for (let ej = 0; ej < B_NEL; ej++) {
-      for (let ai = 0; ai < B_NAZ; ai++) {
-        const v = acc[ej * B_NAZ + ai];
-        if (v < maxV * 0.18) continue;
-        const dir = sphericalToVector(ai * 5 + 2.5, -90 + ej * 5);
-        const cam = Quat.rotateVec(invQ, dir);
-        if (cam[2] >= -0.02) continue; // hinter der Kamera
-        const proj = cameraRayToScreen(cam);
-        if (!proj) continue;
-        bCtx.globalAlpha = Math.min(0.55, 0.12 + 0.5 * (v / maxV));
-        bCtx.drawImage(dot, proj.px - r, proj.py - r, 2 * r, 2 * r);
-      }
-    }
-    bCtx.globalAlpha = 1;
-    bCtx.globalCompositeOperation = 'source-over';
+  bCtx.globalCompositeOperation = 'lighter'; // additive Überlagerung -> Hotspots
+  for (let i = bState.bands.length - 1; i >= 0; i--) {
+    const band = bState.bands[i];
+    const age = now - band.t0;
+    if (age > B_BAND_LIFE) { bState.bands.splice(i, 1); continue; }
+    const fade = 1 - age / B_BAND_LIFE;
+    const dir = sphericalToVector(band.az, band.el);
+    const cam = Quat.rotateVec(invQ, dir);
+    const proj = cameraRayToScreen(cam);
+    if (!proj) continue;
+    // Radius aus Winkelbreite, aber begrenzt, damit unsichere Bänder nicht zerlaufen.
+    let rpx = (Math.tan(band.halfWidth) / tanX) * (W / 2);
+    rpx = Math.max(24, Math.min(rpx, W * 0.45));
+    // Deckkraft mit Mindestwert, damit auch unsichere Bänder sichtbar bleiben.
+    const alpha = Math.min(0.5, (0.16 + 0.34 * band.quality) * fade);
+    const g = bCtx.createRadialGradient(proj.px, proj.py, 0, proj.px, proj.py, rpx);
+    g.addColorStop(0, `rgba(255,110,50,${alpha})`);
+    g.addColorStop(0.6, `rgba(255,90,40,${alpha * 0.5})`);
+    g.addColorStop(1, 'rgba(255,90,40,0)');
+    bCtx.fillStyle = g;
+    bCtx.beginPath();
+    bCtx.arc(proj.px, proj.py, rpx, 0, Math.PI * 2);
+    bCtx.fill();
   }
-
-  // Grünes Zentrum (geschätzte Quelle) – raumstabil.
-  if (bState.peakVec) {
-    const proj = cameraRayToScreen(Quat.rotateVec(invQ, bState.peakVec));
-    if (proj) {
-      bCtx.strokeStyle = 'rgba(25,227,106,0.95)';
-      bCtx.lineWidth = 3;
-      bCtx.beginPath(); bCtx.arc(proj.px, proj.py, 26, 0, Math.PI * 2); bCtx.stroke();
-      bCtx.fillStyle = 'rgba(25,227,106,0.95)';
-      bCtx.beginPath(); bCtx.arc(proj.px, proj.py, 6, 0, Math.PI * 2); bCtx.fill();
-      bCtx.font = '13px -apple-system, sans-serif';
-      bCtx.fillText('Quelle?', proj.px + 32, proj.py + 4);
-    }
+  // Sichtbarer Rand des hellsten Bereichs (nicht additiv), für klare Abgrenzung.
+  bCtx.globalCompositeOperation = 'source-over';
+  for (let i = 0; i < bState.bands.length; i++) {
+    const band = bState.bands[i];
+    const fade = 1 - (now - band.t0) / B_BAND_LIFE;
+    if (fade <= 0) continue;
+    const dir = sphericalToVector(band.az, band.el);
+    const proj = cameraRayToScreen(Quat.rotateVec(invQ, dir));
+    if (!proj) continue;
+    let rpx = (Math.tan(band.halfWidth) / tanX) * (W / 2);
+    rpx = Math.max(24, Math.min(rpx, W * 0.45));
+    bCtx.strokeStyle = `rgba(255,140,80,${0.35 * fade})`;
+    bCtx.lineWidth = 1.5;
+    bCtx.beginPath();
+    bCtx.arc(proj.px, proj.py, rpx, 0, Math.PI * 2);
+    bCtx.stroke();
   }
 }
 
@@ -1184,7 +1101,6 @@ async function startModeB() {
     state.positionFrozen = false;
     bClear();
     tone = new TargetTone();
-    tone.onWindow = bOnAudioWindow; // Fenster kohärent je Audioblock sammeln
     await tone.start(freq); // Mikrofon-Freigabe (Nutzergeste vom Button-Klick)
     state.modeB = true;
     modeBLoop();
@@ -1198,26 +1114,9 @@ async function startModeB() {
 function modeBLoop() {
   if (!state.modeB) return;
   const now = performance.now();
-  const l = tone ? tone.latest : null; // Daten kommen kohärent aus dem Audio-Callback
-
-  // Geführte Messung: Countdown / Abschluss.
-  const cd = document.getElementById('b-countdown');
-  if (state.bMeasuring) {
-    const remain = (state.bMeasEndT - now) / 1000;
-    if (remain <= 0) {
-      cd.classList.add('hidden');
-      bFinishMeasurement();
-    } else {
-      cd.classList.remove('hidden');
-      cd.querySelector('.cd-num').textContent = String(Math.ceil(remain));
-      cd.querySelector('.cd-hint').textContent =
-        remain <= B_MEAS_DURATION * 0.5 ? '… zurück zum Start' : 'im Kreis bewegen';
-    }
-  } else {
-    cd.classList.add('hidden');
-  }
-
+  const l = tone ? tone.analyze() : null;
   if (l) {
+    bCollectWindow(now, l);
     document.getElementById('b-db').textContent =
       (l.db <= -119 ? '–' : l.db.toFixed(1)) + ' dB · SNR ' + l.snr.toFixed(1);
     const det = document.getElementById('b-detect');
@@ -1225,23 +1124,14 @@ function modeBLoop() {
       const rem = Math.max(0, (state.calEndT - now) / 1000);
       det.textContent = 'Kalibriere … ' + rem.toFixed(1) + ' s';
       det.classList.remove('on');
-    } else if (state.bMeasuring) {
-      det.textContent = 'Messung läuft …';
-      det.classList.add('on');
-    } else if (bState.msgUntil > now) {
-      det.textContent = bState.msg;
-      det.classList.remove('on');
     } else {
       const on = bTonePresent(l);
       det.textContent = on ? 'Ton erkannt' : 'kein Ton';
       det.classList.toggle('on', on);
     }
   }
-
-  bRenderResult();
-  document.getElementById('b-count').textContent = String((bState.measCorr || []).length);
-  document.getElementById('b-peak').textContent =
-    bState.peakVec ? 'Konfidenz ' + bState.peakConf.toFixed(1) + '×' : '–';
+  bRenderBands(now);
+  document.getElementById('b-count').textContent = String(bState.bands.length);
   document.getElementById('b-rate').textContent =
     state.motionHz ? state.motionHz.toFixed(0) + ' Hz' + (state.motionSource === 'Sensor-API 60Hz' ? ' · API' : ' · DM') : '–';
   modeBRaf = requestAnimationFrame(modeBLoop);
@@ -1278,14 +1168,9 @@ function init() {
   document.getElementById('b-calibrate').addEventListener('click', bCalibrate);
   document.getElementById('b-center').addEventListener('click', bRecenter);
   document.getElementById('b-clear').addEventListener('click', bClear);
-  document.getElementById('b-measure').addEventListener('click', bStartMeasurement);
-  document.getElementById('b-sign').addEventListener('click', () => {
-    state.bSign = -state.bSign;
-    if (bState.measCorr && bState.measCorr.length) bRecompute(); // mit denselben Daten neu rechnen
-  });
   document.getElementById('b-freq').addEventListener('input', (e) => {
     if (tone) tone.setFreq(parseFloat(e.target.value) || 0);
-    bClear(); // bei Frequenzwechsel alte Messung verwerfen
+    bClear(); // bei Frequenzwechsel alte Bänder verwerfen
   });
   document.getElementById('btn-stop').addEventListener('click', stop);
   document.getElementById('btn-calibrate').addEventListener('click', startCalibration);
