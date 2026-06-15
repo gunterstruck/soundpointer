@@ -253,6 +253,8 @@ const state = {
   view: 'ar',    // 'ar' | '3d'
   parallax: false, // Marker mit Positions-Parallaxe (6DoF) statt reiner Richtung (3DoF)?
   modeB: false,  // Variante-B-Modus aktiv?
+  bRenderMode: 'cone', // 'cone' | 'hotspot' | 'combined'
+  bSign: 1,      // Vorzeichen der Laufzeitdifferenz (Debug-Umschalter)
   showDebug: true,
   running: false,
   sensorsInitialized: false,
@@ -993,30 +995,17 @@ function bFormPair(now, cur) {
   if (Math.abs(d) > bestBase) return;                 // physikalisch unmöglich -> verwerfen
 
   const bvec = [A.pos[0] - best.pos[0], A.pos[1] - best.pos[1], A.pos[2] - best.pos[2]];
-  const bhat = normalize3(bvec);
-  const cosT = Math.max(-1, Math.min(1, d / bestBase));
-  const sinT = Math.sqrt(Math.max(0, 1 - cosT * cosT));
-
-  // Aus dem Lösungs-Kegel die Richtung nahe der Blickrichtung wählen.
-  const fwd = A.fwd;
-  const dotfa = fwd[0] * bhat[0] + fwd[1] * bhat[1] + fwd[2] * bhat[2];
-  let fperp = [fwd[0] - dotfa * bhat[0], fwd[1] - dotfa * bhat[1], fwd[2] - dotfa * bhat[2]];
-  const fpl = Math.hypot(fperp[0], fperp[1], fperp[2]);
-  fperp = fpl < 1e-4 ? anyPerp(bhat) : [fperp[0] / fpl, fperp[1] / fpl, fperp[2] / fpl];
-  const u = [
-    cosT * bhat[0] + sinT * fperp[0],
-    cosT * bhat[1] + sinT * fperp[1],
-    cosT * bhat[2] + sinT * fperp[2],
-  ];
-  const { azimuth, elevation } = vectorToSpherical(u);
+  const axis = normalize3(bvec);                    // Kegelachse = Bewegungsbasis (Weltkoord.)
+  const cosA = Math.max(-1, Math.min(1, d / bestBase)); // halber Öffnungswinkel des Kegels
 
   // Qualität: längere Basis und klareres Signal (SNR) -> schmaleres, sichereres Band.
   const baseQ = Math.min(1, bestBase / (lambda * 0.5));
   const sigQ = Math.min(1, Math.max(0, (cur.snr - B_SNR_THRESH) / (1.4 - B_SNR_THRESH)));
   const quality = Math.max(0.08, baseQ * sigQ);
-  const halfWidth = (10 + 35 * (1 - quality)) * DEG; // 10°..45°
+  const halfWidth = (6 + 24 * (1 - quality)) * DEG; // Band-/Hotspot-Dicke 6°..30°
 
-  bState.bands.push({ az: azimuth, el: elevation, halfWidth, quality, t0: now });
+  // Raumstabil als Kegel speichern (Achse = Weltvektor); KEINE kamera-nahe Einzelauswahl.
+  bState.bands.push({ axis, cosA, halfWidth, quality, t0: now });
   while (bState.bands.length > B_MAX_BANDS) bState.bands.shift();
 }
 
@@ -1025,7 +1014,85 @@ function bClear() {
   bState.windows.length = 0;
 }
 
-// Raumstabile Konfidenzbänder über dem Kamerabild zeichnen (Überlagerung = Heatmap).
+function cross3(a, b) {
+  return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+}
+
+// HOTSPOT (Debug/Vergleich): wählt aus dem Kegel die Richtung nahe der Blickrichtung
+// und zeichnet dort einen Kreis. Erzeugt den bekannten Kamera-Mitten-Bias.
+function bDrawHotspot(band, invQ, fwd, fade) {
+  const { tanX } = getFov();
+  const W = window.innerWidth;
+  const cosA = band.cosA * (state.bSign || 1);
+  const sinA = Math.sqrt(Math.max(0, 1 - cosA * cosA));
+  const a = band.axis;
+  const dotfa = fwd[0] * a[0] + fwd[1] * a[1] + fwd[2] * a[2];
+  let fp = [fwd[0] - dotfa * a[0], fwd[1] - dotfa * a[1], fwd[2] - dotfa * a[2]];
+  const l = Math.hypot(fp[0], fp[1], fp[2]);
+  fp = l < 1e-4 ? anyPerp(a) : [fp[0] / l, fp[1] / l, fp[2] / l];
+  const u = [cosA * a[0] + sinA * fp[0], cosA * a[1] + sinA * fp[1], cosA * a[2] + sinA * fp[2]];
+  const proj = cameraRayToScreen(Quat.rotateVec(invQ, u));
+  if (!proj) return;
+  let rpx = (Math.tan(band.halfWidth) / tanX) * (W / 2);
+  rpx = Math.max(20, Math.min(rpx, W * 0.4));
+  const alpha = Math.min(0.5, (0.16 + 0.34 * band.quality) * fade);
+  const g = bCtx.createRadialGradient(proj.px, proj.py, 0, proj.px, proj.py, rpx);
+  g.addColorStop(0, `rgba(80,180,255,${alpha})`);
+  g.addColorStop(1, 'rgba(80,180,255,0)');
+  bCtx.fillStyle = g;
+  bCtx.beginPath(); bCtx.arc(proj.px, proj.py, rpx, 0, Math.PI * 2); bCtx.fill();
+}
+
+// CONEBAND (physikalisch sauber): zeichnet die GESAMTE Kegel-Lösungsmenge als
+// gebogenes Band – raumstabil, ohne Auswahl nahe der Blickrichtung.
+function bDrawConeBand(band, invQ, fade) {
+  const { tanX } = getFov();
+  const W = window.innerWidth, H = window.innerHeight;
+  const a = band.axis;
+  const cosA = band.cosA * (state.bSign || 1);
+  const sinA = Math.sqrt(Math.max(0, 1 - cosA * cosA));
+  const p = anyPerp(a);
+  const q = cross3(a, p);
+  const N = 160;
+  const segs = [];
+  let seg = [];
+  for (let i = 0; i <= N; i++) {
+    const th = (i / N) * 2 * Math.PI;
+    const ct = Math.cos(th), st = Math.sin(th);
+    const u = [
+      cosA * a[0] + sinA * (ct * p[0] + st * q[0]),
+      cosA * a[1] + sinA * (ct * p[1] + st * q[1]),
+      cosA * a[2] + sinA * (ct * p[2] + st * q[2]),
+    ];
+    const cam = Quat.rotateVec(invQ, u);
+    if (cam[2] < -0.03) { // vor der Kamera
+      const proj = cameraRayToScreen(cam);
+      if (proj && proj.px > -300 && proj.px < W + 300 && proj.py > -300 && proj.py < H + 300) {
+        seg.push(proj); continue;
+      }
+    }
+    if (seg.length > 1) segs.push(seg);
+    seg = [];
+  }
+  if (seg.length > 1) segs.push(seg);
+  if (!segs.length) return;
+
+  let lw = (Math.tan(band.halfWidth) / tanX) * (W / 2) * 2;
+  lw = Math.max(10, Math.min(lw, 130));
+  const alpha = Math.min(0.5, (0.14 + 0.34 * band.quality) * fade);
+  bCtx.strokeStyle = `rgba(255,110,50,${alpha})`;
+  bCtx.lineWidth = lw;
+  bCtx.lineCap = 'round';
+  bCtx.lineJoin = 'round';
+  for (const s of segs) {
+    bCtx.beginPath();
+    bCtx.moveTo(s[0].px, s[0].py);
+    for (let k = 1; k < s.length; k++) bCtx.lineTo(s[k].px, s[k].py);
+    bCtx.stroke();
+  }
+}
+
+// Konfidenzbänder über dem Kamerabild zeichnen (Überlagerung = Heatmap).
 function bRenderBands(now) {
   const cv = document.getElementById('b-canvas');
   const dpr = window.devicePixelRatio || 1;
@@ -1034,49 +1101,19 @@ function bRenderBands(now) {
   bCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
   bCtx.clearRect(0, 0, W, H);
 
-  const { tanX } = getFov();
   const invQ = Quat.conjugate(state.quat);
-  bCtx.globalCompositeOperation = 'lighter'; // additive Überlagerung -> Hotspots
+  const fwd = Quat.rotateVec(state.quat, [0, 0, -1]);
+  const mode = state.bRenderMode; // 'cone' | 'hotspot' | 'combined'
+  bCtx.globalCompositeOperation = 'lighter'; // additive Überlagerung -> Heatmap
   for (let i = bState.bands.length - 1; i >= 0; i--) {
     const band = bState.bands[i];
     const age = now - band.t0;
     if (age > B_BAND_LIFE) { bState.bands.splice(i, 1); continue; }
     const fade = 1 - age / B_BAND_LIFE;
-    const dir = sphericalToVector(band.az, band.el);
-    const cam = Quat.rotateVec(invQ, dir);
-    const proj = cameraRayToScreen(cam);
-    if (!proj) continue;
-    // Radius aus Winkelbreite, aber begrenzt, damit unsichere Bänder nicht zerlaufen.
-    let rpx = (Math.tan(band.halfWidth) / tanX) * (W / 2);
-    rpx = Math.max(24, Math.min(rpx, W * 0.45));
-    // Deckkraft mit Mindestwert, damit auch unsichere Bänder sichtbar bleiben.
-    const alpha = Math.min(0.5, (0.16 + 0.34 * band.quality) * fade);
-    const g = bCtx.createRadialGradient(proj.px, proj.py, 0, proj.px, proj.py, rpx);
-    g.addColorStop(0, `rgba(255,110,50,${alpha})`);
-    g.addColorStop(0.6, `rgba(255,90,40,${alpha * 0.5})`);
-    g.addColorStop(1, 'rgba(255,90,40,0)');
-    bCtx.fillStyle = g;
-    bCtx.beginPath();
-    bCtx.arc(proj.px, proj.py, rpx, 0, Math.PI * 2);
-    bCtx.fill();
+    if (mode === 'cone' || mode === 'combined') bDrawConeBand(band, invQ, fade);
+    if (mode === 'hotspot' || mode === 'combined') bDrawHotspot(band, invQ, fwd, fade);
   }
-  // Sichtbarer Rand des hellsten Bereichs (nicht additiv), für klare Abgrenzung.
   bCtx.globalCompositeOperation = 'source-over';
-  for (let i = 0; i < bState.bands.length; i++) {
-    const band = bState.bands[i];
-    const fade = 1 - (now - band.t0) / B_BAND_LIFE;
-    if (fade <= 0) continue;
-    const dir = sphericalToVector(band.az, band.el);
-    const proj = cameraRayToScreen(Quat.rotateVec(invQ, dir));
-    if (!proj) continue;
-    let rpx = (Math.tan(band.halfWidth) / tanX) * (W / 2);
-    rpx = Math.max(24, Math.min(rpx, W * 0.45));
-    bCtx.strokeStyle = `rgba(255,140,80,${0.35 * fade})`;
-    bCtx.lineWidth = 1.5;
-    bCtx.beginPath();
-    bCtx.arc(proj.px, proj.py, rpx, 0, Math.PI * 2);
-    bCtx.stroke();
-  }
 }
 
 async function startModeB() {
@@ -1168,6 +1205,17 @@ function init() {
   document.getElementById('b-calibrate').addEventListener('click', bCalibrate);
   document.getElementById('b-center').addEventListener('click', bRecenter);
   document.getElementById('b-clear').addEventListener('click', bClear);
+  const btnMode = document.getElementById('b-mode');
+  btnMode.addEventListener('click', () => {
+    state.bRenderMode = state.bRenderMode === 'cone' ? 'hotspot'
+      : state.bRenderMode === 'hotspot' ? 'combined' : 'cone';
+    btnMode.textContent = 'Modus: ' + (state.bRenderMode === 'cone' ? 'Band'
+      : state.bRenderMode === 'hotspot' ? 'Hotspot' : 'Beides');
+  });
+  document.getElementById('b-sign').addEventListener('click', () => {
+    state.bSign = -state.bSign;
+    bClear();
+  });
   document.getElementById('b-freq').addEventListener('input', (e) => {
     if (tone) tone.setFreq(parseFloat(e.target.value) || 0);
     bClear(); // bei Frequenzwechsel alte Bänder verwerfen
