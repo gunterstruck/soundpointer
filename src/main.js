@@ -220,6 +220,8 @@ const state = {
   motionSupported: false,
   gravityFree: false,          // liefert das Gerät schwerkraftfreie Beschleunigung?
   accMag: 0,                   // aktueller Betrag |a| (m/s²) – zur Überprüfung
+  motionHz: 0,                 // gemessene Lieferrate des Beschleunigungssensors (Hz)
+  motionInterval: 0,           // vom Gerät gemeldetes Sample-Intervall (ms)
   lastMotionT: 0,
   stillTime: 0,                // wie lange die Beschleunigung schon klein ist (s)
   zupt: false,                 // Stillstand erkannt -> Geschwindigkeit genullt
@@ -341,6 +343,16 @@ function onOrientation(ev, absolute) {
 
 // Beschleunigung -> Position (experimentelles 6DoF, doppelte Integration).
 function onMotion(ev) {
+  // Tatsächliche Sensorrate messen (Lieferrate ans JS + vom Gerät gemeldetes Intervall).
+  const tnow = performance.now();
+  state._hzCount = (state._hzCount || 0) + 1;
+  if (!state._hzT) state._hzT = tnow;
+  if (tnow - state._hzT >= 1000) {
+    state.motionHz = (state._hzCount * 1000) / (tnow - state._hzT);
+    state._hzCount = 0; state._hzT = tnow;
+  }
+  if (ev.interval) state.motionInterval = ev.interval;
+
   const acc = ev.acceleration;                  // OHNE Schwerkraft (vom OS entfernt)
   const accG = ev.accelerationIncludingGravity; // MIT Schwerkraft (roh)
 
@@ -745,7 +757,7 @@ function render() {
 
 const dbg = {};
 function cacheDom() {
-  ['source', 'azimuth', 'pitch', 'roll', 'amag', 'speed', 'pos', 'dist', 'time', 'count'].forEach((k) => {
+  ['source', 'azimuth', 'pitch', 'roll', 'amag', 'rate', 'speed', 'pos', 'dist', 'time', 'count'].forEach((k) => {
     dbg[k] = document.getElementById('dbg-' + k);
   });
 }
@@ -764,8 +776,11 @@ function updateDebug() {
   if (state.motionSupported) {
     const tag = state.gravityFree ? 'g-frei ✓' : 'mit g!';
     dbg.amag.textContent = state.accMag.toFixed(3) + ' m/s² · ' + tag;
+    const iv = state.motionInterval ? ` (${(1000 / state.motionInterval).toFixed(0)})` : '';
+    dbg.rate.textContent = state.motionHz ? state.motionHz.toFixed(0) + ' Hz' + iv : '–';
   } else {
     dbg.amag.textContent = 'n/a';
+    dbg.rate.textContent = 'n/a';
   }
 
   // Geschwindigkeit + ZUPT-Status (zur Beurteilung der Stillstandserkennung).
@@ -1043,6 +1058,8 @@ function modeBLoop() {
   }
   bRenderBands(now);
   document.getElementById('b-count').textContent = String(bState.bands.length);
+  document.getElementById('b-rate').textContent =
+    state.motionHz ? state.motionHz.toFixed(0) + ' Hz' : '–';
   modeBRaf = requestAnimationFrame(modeBLoop);
 }
 
