@@ -929,11 +929,16 @@ let bCtx = null;
 
 const SOUND_C = 343;            // Schallgeschwindigkeit (m/s)
 const B_WIN_MS = 160;           // Abstand der Messfenster (ms)
-const B_DB_THRESH = -50;        // Mindestpegel, damit ein Fenster zählt (dB)
+const B_SNR_THRESH = 0.45;      // Verhältnis Ziel/Gesamt – Ton gilt als erkannt (distanzunabhängig)
+const B_MAG_FLOOR = 2e-4;       // absolute Untergrenze (~ -74 dB) gegen Stille/Numerik
 const B_MIN_BASELINE = 0.04;    // Mindest-Bewegungsabstand für ein Paar (m)
 const B_MAX_PAIR_DT = 1800;     // max. Zeitabstand eines Paares (ms)
 const B_BAND_LIFE = 6000;       // Lebensdauer eines Bandes (ms)
 const B_MAX_BANDS = 60;
+
+function bTonePresent(l) {
+  return !!l && l.snr > B_SNR_THRESH && l.magnitude > B_MAG_FLOOR;
+}
 
 const bState = {
   windows: [],   // { t, fwd:[x,y,z], pos:[x,y,z], amp, phase, db }
@@ -951,10 +956,11 @@ function anyPerp(a) {
 function bCollectWindow(now, l) {
   if (now - bState.lastWinT < B_WIN_MS) return;
   bState.lastWinT = now;
+  const present = bTonePresent(l);
   const fwd = Quat.rotateVec(state.quat, [0, 0, -1]);
-  bState.windows.push({ t: now, fwd, pos: state.position.slice(), amp: l.magnitude, phase: l.phase, db: l.db });
+  bState.windows.push({ t: now, fwd, pos: state.position.slice(), amp: l.magnitude, phase: l.phase, snr: l.snr, present });
   while (bState.windows.length > 80) bState.windows.shift();
-  if (l.db > B_DB_THRESH) bFormPair(now, l);
+  if (present) bFormPair(now, l);
 }
 
 // Aus dem neuesten Fenster + einem geeigneten früheren Fenster ein Band bilden.
@@ -964,7 +970,7 @@ function bFormPair(now, cur) {
   for (let i = bState.windows.length - 2; i >= 0; i--) {
     const w = bState.windows[i];
     if (now - w.t > B_MAX_PAIR_DT) break;
-    if (w.db <= B_DB_THRESH) continue;
+    if (!w.present) continue;
     const base = Math.hypot(A.pos[0] - w.pos[0], A.pos[1] - w.pos[1], A.pos[2] - w.pos[2]);
     if (base > bestBase) { bestBase = base; best = w; }
   }
@@ -997,11 +1003,11 @@ function bFormPair(now, cur) {
   ];
   const { azimuth, elevation } = vectorToSpherical(u);
 
-  // Qualität: längere Basis und stärkeres Signal -> schmaleres, sichereres Band.
+  // Qualität: längere Basis und klareres Signal (SNR) -> schmaleres, sichereres Band.
   const baseQ = Math.min(1, bestBase / (lambda * 0.5));
-  const sigQ = Math.min(1, Math.max(0, (cur.db + 60) / 45));
-  const quality = Math.max(0.05, baseQ * sigQ);
-  const halfWidth = (8 + 55 * (1 - quality)) * DEG;
+  const sigQ = Math.min(1, Math.max(0, (cur.snr - B_SNR_THRESH) / (1.4 - B_SNR_THRESH)));
+  const quality = Math.max(0.08, baseQ * sigQ);
+  const halfWidth = (10 + 35 * (1 - quality)) * DEG; // 10°..45°
 
   bState.bands.push({ az: azimuth, el: elevation, halfWidth, quality, t0: now });
   while (bState.bands.length > B_MAX_BANDS) bState.bands.shift();
@@ -1033,17 +1039,37 @@ function bRenderBands(now) {
     const cam = Quat.rotateVec(invQ, dir);
     const proj = cameraRayToScreen(cam);
     if (!proj) continue;
-    const rpx = (Math.tan(band.halfWidth) / tanX) * (W / 2);
-    const alpha = 0.22 * band.quality * fade;
-    const g = bCtx.createRadialGradient(proj.px, proj.py, 0, proj.px, proj.py, Math.max(8, rpx));
-    g.addColorStop(0, `rgba(255,90,40,${alpha})`);
+    // Radius aus Winkelbreite, aber begrenzt, damit unsichere Bänder nicht zerlaufen.
+    let rpx = (Math.tan(band.halfWidth) / tanX) * (W / 2);
+    rpx = Math.max(24, Math.min(rpx, W * 0.45));
+    // Deckkraft mit Mindestwert, damit auch unsichere Bänder sichtbar bleiben.
+    const alpha = Math.min(0.5, (0.16 + 0.34 * band.quality) * fade);
+    const g = bCtx.createRadialGradient(proj.px, proj.py, 0, proj.px, proj.py, rpx);
+    g.addColorStop(0, `rgba(255,110,50,${alpha})`);
+    g.addColorStop(0.6, `rgba(255,90,40,${alpha * 0.5})`);
     g.addColorStop(1, 'rgba(255,90,40,0)');
     bCtx.fillStyle = g;
     bCtx.beginPath();
-    bCtx.arc(proj.px, proj.py, Math.max(8, rpx), 0, Math.PI * 2);
+    bCtx.arc(proj.px, proj.py, rpx, 0, Math.PI * 2);
     bCtx.fill();
   }
+  // Sichtbarer Rand des hellsten Bereichs (nicht additiv), für klare Abgrenzung.
   bCtx.globalCompositeOperation = 'source-over';
+  for (let i = 0; i < bState.bands.length; i++) {
+    const band = bState.bands[i];
+    const fade = 1 - (now - band.t0) / B_BAND_LIFE;
+    if (fade <= 0) continue;
+    const dir = sphericalToVector(band.az, band.el);
+    const proj = cameraRayToScreen(Quat.rotateVec(invQ, dir));
+    if (!proj) continue;
+    let rpx = (Math.tan(band.halfWidth) / tanX) * (W / 2);
+    rpx = Math.max(24, Math.min(rpx, W * 0.45));
+    bCtx.strokeStyle = `rgba(255,140,80,${0.35 * fade})`;
+    bCtx.lineWidth = 1.5;
+    bCtx.beginPath();
+    bCtx.arc(proj.px, proj.py, rpx, 0, Math.PI * 2);
+    bCtx.stroke();
+  }
 }
 
 async function startModeB() {
@@ -1084,9 +1110,10 @@ function modeBLoop() {
   const l = tone ? tone.analyze() : null;
   if (l) {
     bCollectWindow(now, l);
-    document.getElementById('b-db').textContent = (l.db <= -119 ? '–' : l.db.toFixed(1)) + ' dB';
+    document.getElementById('b-db').textContent =
+      (l.db <= -119 ? '–' : l.db.toFixed(1)) + ' dB · SNR ' + l.snr.toFixed(1);
     const det = document.getElementById('b-detect');
-    const on = l.db > B_DB_THRESH;
+    const on = bTonePresent(l);
     det.textContent = on ? 'Ton erkannt' : 'kein Ton';
     det.classList.toggle('on', on);
   }

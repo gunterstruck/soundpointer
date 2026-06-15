@@ -68,8 +68,11 @@ export class TargetTone {
     const phase = Math.atan2(imag, real);               // Radiant
     const rms = Math.sqrt(sumsq / N);
     const db = 20 * Math.log10(magnitude + 1e-9);
+    // Verhältnis Zielfrequenz zur Gesamtenergie: ~1.4 bei reinem Ton, klein bei Rauschen.
+    // Distanzunabhängig -> robuste Erkennung auch bei leisem (entferntem) Ton.
+    const snr = magnitude / (rms + 1e-9);
 
-    this.latest = { magnitude, db, phase, rms, freq: this.freq, sampleRate: sr, windowMs: (N / sr) * 1000 };
+    this.latest = { magnitude, db, phase, rms, snr, freq: this.freq, sampleRate: sr, windowMs: (N / sr) * 1000 };
     return this.latest;
   }
 
