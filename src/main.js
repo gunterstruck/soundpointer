@@ -932,6 +932,7 @@ const B_WIN_MS = 160;           // Abstand der Messfenster (ms)
 const B_SNR_THRESH = 0.45;      // Verhältnis Ziel/Gesamt – Ton gilt als erkannt (distanzunabhängig)
 const B_MAG_FLOOR = 2e-4;       // absolute Untergrenze (~ -74 dB) gegen Stille/Numerik
 const B_MIN_BASELINE = 0.04;    // Mindest-Bewegungsabstand für ein Paar (m)
+const B_MAX_BASELINE = 1.5;     // unplausibel großer Abstand (z. B. nach Zentrieren) -> verwerfen
 const B_MAX_PAIR_DT = 1800;     // max. Zeitabstand eines Paares (ms)
 const B_BAND_LIFE = 6000;       // Lebensdauer eines Bandes (ms)
 const B_MAX_BANDS = 60;
@@ -953,7 +954,13 @@ function anyPerp(a) {
   return normalize3(x);
 }
 
+// Kalibrieren/Zentrieren im B-Modus: Funktionen sind geteilt; Fensterpuffer leeren,
+// damit Positionssprünge keine Geister-Bänder erzeugen.
+function bCalibrate() { bState.windows.length = 0; startCalibration(); }
+function bRecenter() { recenter(); bState.windows.length = 0; }
+
 function bCollectWindow(now, l) {
+  if (state.calibrating) return; // während der Kalibrierung keine Fenster sammeln
   if (now - bState.lastWinT < B_WIN_MS) return;
   bState.lastWinT = now;
   const present = bTonePresent(l);
@@ -974,7 +981,7 @@ function bFormPair(now, cur) {
     const base = Math.hypot(A.pos[0] - w.pos[0], A.pos[1] - w.pos[1], A.pos[2] - w.pos[2]);
     if (base > bestBase) { bestBase = base; best = w; }
   }
-  if (!best || bestBase < B_MIN_BASELINE) return;
+  if (!best || bestBase < B_MIN_BASELINE || bestBase > B_MAX_BASELINE) return;
 
   const f = tone.freq;
   const lambda = SOUND_C / f;
@@ -1113,9 +1120,15 @@ function modeBLoop() {
     document.getElementById('b-db').textContent =
       (l.db <= -119 ? '–' : l.db.toFixed(1)) + ' dB · SNR ' + l.snr.toFixed(1);
     const det = document.getElementById('b-detect');
-    const on = bTonePresent(l);
-    det.textContent = on ? 'Ton erkannt' : 'kein Ton';
-    det.classList.toggle('on', on);
+    if (state.calibrating) {
+      const rem = Math.max(0, (state.calEndT - now) / 1000);
+      det.textContent = 'Kalibriere … ' + rem.toFixed(1) + ' s';
+      det.classList.remove('on');
+    } else {
+      const on = bTonePresent(l);
+      det.textContent = on ? 'Ton erkannt' : 'kein Ton';
+      det.classList.toggle('on', on);
+    }
   }
   bRenderBands(now);
   document.getElementById('b-count').textContent = String(bState.bands.length);
@@ -1152,6 +1165,8 @@ function init() {
   document.getElementById('btn-start').addEventListener('click', start);
   document.getElementById('btn-start-b').addEventListener('click', startModeB);
   document.getElementById('b-close').addEventListener('click', stopModeB);
+  document.getElementById('b-calibrate').addEventListener('click', bCalibrate);
+  document.getElementById('b-center').addEventListener('click', bRecenter);
   document.getElementById('b-clear').addEventListener('click', bClear);
   document.getElementById('b-freq').addEventListener('input', (e) => {
     if (tone) tone.setFreq(parseFloat(e.target.value) || 0);
