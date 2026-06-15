@@ -330,6 +330,64 @@ html, body {
   max-width: 80vw;
 }
 
+/* Mode C – Akustische Taschenlampe */
+#modeC { position: fixed; inset: 0; z-index: 8; }
+#modeC.hidden { display: none; }
+#c-canvas { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+#c-crosshair {
+  position: absolute; left: 50%; top: 50%; width: 44px; height: 44px;
+  transform: translate(-50%, -50%); pointer-events: none; opacity: 0.7;
+}
+#c-crosshair .ch-h, #c-crosshair .ch-v { position: absolute; background: rgba(255, 255, 255, 0.7); }
+#c-crosshair .ch-h { left: 0; right: 0; top: 50%; height: 1px; transform: translateY(-0.5px); }
+#c-crosshair .ch-v { top: 0; bottom: 0; left: 50%; width: 1px; transform: translateX(-0.5px); }
+#c-crosshair .ch-dot { position: absolute; left: 50%; top: 50%; width: 4px; height: 4px; margin: -2px 0 0 -2px; border-radius: 50%; background: rgba(255, 255, 255, 0.9); }
+#c-hud {
+  position: absolute; top: max(12px, env(safe-area-inset-top)); left: 12px;
+  width: min(72vw, 320px);
+  padding: 10px 12px;
+  background: rgba(0, 0, 0, 0.5);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 10px;
+  font-size: 13px; line-height: 1.5;
+  backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px);
+  font-variant-numeric: tabular-nums;
+}
+#c-hud .row { display: flex; justify-content: space-between; gap: 12px; }
+#c-hud .row span { color: rgba(255, 255, 255, 0.65); }
+#c-hud .row b { color: #ffb24a; font-weight: 600; }
+.c-input-row { display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px; color: rgba(255,255,255,0.7); font-size: 12px; }
+#c-input {
+  width: 100%; padding: 6px 8px; border-radius: 8px;
+  border: 1px solid rgba(255,255,255,0.25); background: rgba(255,255,255,0.08);
+  color: #fff; font-size: 13px;
+}
+.c-meter { margin: 8px 0; height: 14px; border-radius: 999px; background: rgba(255,255,255,0.1); overflow: hidden; }
+#c-bar { height: 100%; width: 0%; border-radius: 999px; background: linear-gradient(90deg, #ffd23f, #ff6e32); transition: width 0.08s linear; }
+#c-warn { margin-top: 6px; font-size: 12px; color: #ff8c4a; min-height: 1em; }
+#c-controls {
+  position: absolute; bottom: max(16px, env(safe-area-inset-bottom)); left: 50%;
+  transform: translateX(-50%); display: flex; gap: 10px;
+}
+#c-controls button {
+  appearance: none; border: 1px solid rgba(255, 255, 255, 0.25);
+  background: rgba(0, 0, 0, 0.5); color: #fff; padding: 10px 16px;
+  border-radius: 999px; font-size: 14px;
+  backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px);
+}
+#c-controls button:active { background: rgba(255, 255, 255, 0.15); }
+#c-controls button.armed { background: rgba(255, 110, 50, 0.4); }
+#c-hint {
+  position: absolute; bottom: calc(max(16px, env(safe-area-inset-bottom)) + 52px);
+  left: 50%; transform: translateX(-50%); width: max-content; max-width: 92vw;
+  text-align: center; font-size: 11px; color: rgba(255, 255, 255, 0.6);
+  background: rgba(0, 0, 0, 0.4); padding: 6px 12px; border-radius: 999px; pointer-events: none;
+}
+#c-error {
+  position: absolute; top: 40%; left: 50%; transform: translateX(-50%);
+  color: #ff6b6b; font-size: 14px; text-align: center; max-width: 80vw;
+}
+
 .gate-card button.secondary {
   margin-top: 12px;
   background: transparent;

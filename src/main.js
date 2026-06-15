@@ -26,6 +26,7 @@
 import './style.css';
 import { View3D } from './view3d.js';
 import { TargetTone } from './audio.js';
+import { LevelMeter } from './audioLevel.js';
 
 /* ============================================================= *
  *  Minimale Vektor-/Quaternion-Mathematik
@@ -1147,6 +1148,220 @@ function stopModeB() {
   document.getElementById('gate').classList.remove('hidden');
 }
 
+/* ============================================================= *
+ *  Mode C: Akustische Taschenlampe
+ * ============================================================= *
+ *  Gerichtetes (USB-)Mikrofon misst den Zielpegel; die aktuelle
+ *  Blickrichtung (Orientierung, KEINE Position) gewichtet die Richtung.
+ *  Verblassende Heatmap + akustisches Zentrum = Suchrichtung.
+ */
+let meterC = null;
+let modeCRaf = 0;
+let cCtx = null;
+let cDotSprite = null;
+
+const mc = {
+  active: false,
+  frozen: false,
+  samples: [],        // { t, direction:[x,y,z], score, quality, levelDb }
+  fadeTauMs: 4500,
+  maxSamples: 600,
+  minQuality: 0.15,
+  centerVec: null,
+  centerQ01: 0,       // 0..1
+  selectedDeviceId: null,
+  lastSampleT: 0,
+  last: null,         // letzte Messung
+};
+
+function cGetDot() {
+  if (cDotSprite) return cDotSprite;
+  const s = 64;
+  const c = document.createElement('canvas'); c.width = s; c.height = s;
+  const cx = c.getContext('2d');
+  const g = cx.createRadialGradient(s / 2, s / 2, 0, s / 2, s / 2, s / 2);
+  g.addColorStop(0, 'rgba(255,180,80,0.95)');
+  g.addColorStop(0.5, 'rgba(255,120,40,0.45)');
+  g.addColorStop(1, 'rgba(255,110,40,0)');
+  cx.fillStyle = g; cx.fillRect(0, 0, s, s);
+  cDotSprite = c; return c;
+}
+
+function cMicDirection() {
+  // Mikrofonachse = Kamera-Blickrichtung (Offset später kalibrierbar).
+  return Quat.rotateVec(state.quat, [0, 0, -1]);
+}
+
+async function cPopulateInputs() {
+  const sel = document.getElementById('c-input');
+  const list = await LevelMeter.listInputs();
+  sel.innerHTML = '';
+  let preferred = null;
+  for (const d of list) {
+    const o = document.createElement('option');
+    o.value = d.deviceId; o.textContent = d.label;
+    sel.appendChild(o);
+    if (!preferred && LevelMeter.isExternal(d.label)) preferred = d.deviceId;
+  }
+  mc.selectedDeviceId = preferred || (list[0] && list[0].deviceId) || null;
+  if (mc.selectedDeviceId) sel.value = mc.selectedDeviceId;
+}
+
+async function cSetInput(deviceId) {
+  mc.selectedDeviceId = deviceId;
+  if (meterC) meterC.stop();
+  meterC = new LevelMeter();
+  await meterC.start(deviceId);
+  cClear();
+}
+
+async function startModeC() {
+  const err = document.getElementById('c-error');
+  err.textContent = '';
+  document.getElementById('gate').classList.add('hidden');
+  document.getElementById('overlay').classList.add('hidden');
+  document.getElementById('modeC').classList.remove('hidden');
+  cCtx = document.getElementById('c-canvas').getContext('2d');
+  try {
+    await startCamera(document.getElementById('camera'));
+    await initSensors();
+    // Erststart: Berechtigung holen, dann Geräte mit Labels listen, extern bevorzugen.
+    meterC = new LevelMeter();
+    await meterC.start(null);
+    await cPopulateInputs();
+    if (mc.selectedDeviceId && mc.selectedDeviceId !== '') {
+      try { await cSetInput(mc.selectedDeviceId); } catch (e) { /* behalte Default */ }
+    }
+    mc.active = true; mc.frozen = false;
+    cClear();
+    modeCLoop();
+  } catch (e) {
+    console.error(e);
+    err.textContent = (e && e.message) ? e.message
+      : 'Mikrofon-/Kamerazugriff fehlgeschlagen (HTTPS + Freigabe erforderlich).';
+  }
+}
+
+function cClear() { mc.samples = []; mc.centerVec = null; mc.centerQ01 = 0; }
+
+function cSample(now, lv) {
+  if (lv.quality < mc.minQuality) return;
+  mc.samples.push({ t: now, direction: cMicDirection(), score: lv.score, quality: lv.quality, levelDb: lv.levelDb });
+  // Alte/überzählige Samples entfernen.
+  const cutoff = now - mc.fadeTauMs * 3;
+  while (mc.samples.length && (mc.samples[0].t < cutoff || mc.samples.length > mc.maxSamples)) mc.samples.shift();
+}
+
+function cComputeCenter(now) {
+  let v = [0, 0, 0], wsum = 0, fsum = 0;
+  for (const s of mc.samples) {
+    const fade = Math.exp(-(now - s.t) / mc.fadeTauMs);
+    const w = s.score * s.quality * fade;
+    v[0] += s.direction[0] * w; v[1] += s.direction[1] * w; v[2] += s.direction[2] * w;
+    wsum += w; fsum += fade;
+  }
+  mc.centerVec = wsum > 1e-6 ? normalize3(v) : null;
+  mc.centerQ01 = Math.min(1, wsum / (fsum + 1e-6));
+}
+
+function cRender(now) {
+  const cv = document.getElementById('c-canvas');
+  const dpr = window.devicePixelRatio || 1;
+  const W = window.innerWidth, H = window.innerHeight;
+  if (cv.width !== W * dpr || cv.height !== H * dpr) { cv.width = W * dpr; cv.height = H * dpr; }
+  cCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  cCtx.clearRect(0, 0, W, H);
+
+  const invQ = Quat.conjugate(state.quat);
+  // Gewichte + Maximum.
+  let maxW = 1e-9; const wts = new Array(mc.samples.length);
+  for (let i = 0; i < mc.samples.length; i++) {
+    const s = mc.samples[i];
+    const w = s.score * s.quality * Math.exp(-(now - s.t) / mc.fadeTauMs);
+    wts[i] = w; if (w > maxW) maxW = w;
+  }
+  // Heatmap-Blobs.
+  const dot = cGetDot();
+  const r = Math.max(26, W * 0.08);
+  cCtx.globalCompositeOperation = 'lighter';
+  for (let i = 0; i < mc.samples.length; i++) {
+    const w = wts[i];
+    if (w < maxW * 0.12) continue;
+    const cam = Quat.rotateVec(invQ, mc.samples[i].direction);
+    if (cam[2] >= -0.02) continue;
+    const proj = cameraRayToScreen(cam);
+    if (!proj) continue;
+    cCtx.globalAlpha = Math.min(0.6, 0.1 + 0.6 * (w / maxW));
+    cCtx.drawImage(dot, proj.px - r, proj.py - r, 2 * r, 2 * r);
+  }
+  cCtx.globalAlpha = 1;
+  cCtx.globalCompositeOperation = 'source-over';
+
+  // Akustisches Zentrum bzw. Randpfeil.
+  if (mc.centerVec && mc.centerQ01 > 0.12) {
+    const cam = Quat.rotateVec(invQ, mc.centerVec);
+    const proj = cam[2] < -0.02 ? cameraRayToScreen(cam) : null;
+    const onScreen = proj && proj.px > 0 && proj.px < W && proj.py > 0 && proj.py < H;
+    if (onScreen) {
+      cCtx.strokeStyle = 'rgba(25,227,106,0.95)'; cCtx.lineWidth = 3;
+      cCtx.beginPath(); cCtx.arc(proj.px, proj.py, 26, 0, Math.PI * 2); cCtx.stroke();
+      cCtx.fillStyle = 'rgba(25,227,106,0.95)';
+      cCtx.beginPath(); cCtx.arc(proj.px, proj.py, 6, 0, Math.PI * 2); cCtx.fill();
+      cCtx.font = '13px -apple-system, sans-serif';
+      cCtx.fillText('akust. Zentrum', proj.px + 32, proj.py + 4);
+    } else {
+      // Randpfeil zur Richtung.
+      let dx = cam[0], dy = -cam[1];
+      if (cam[2] >= 0) { dx = -dx; dy = -dy; } // hinter der Kamera
+      const ang = Math.atan2(dy, dx);
+      const cx = W / 2, cy = H / 2, rr = Math.min(W, H) * 0.38;
+      const ax = cx + Math.cos(ang) * rr, ay = cy + Math.sin(ang) * rr;
+      cCtx.save();
+      cCtx.translate(ax, ay); cCtx.rotate(ang);
+      cCtx.fillStyle = 'rgba(25,227,106,0.95)';
+      cCtx.beginPath(); cCtx.moveTo(18, 0); cCtx.lineTo(-12, 10); cCtx.lineTo(-12, -10); cCtx.closePath(); cCtx.fill();
+      cCtx.restore();
+    }
+  }
+}
+
+function modeCLoop() {
+  if (!mc.active) return;
+  const now = performance.now();
+  const lv = meterC ? meterC.read() : null;
+  if (lv) {
+    mc.last = lv;
+    if (!mc.frozen) {
+      if (now - mc.lastSampleT >= 60) { mc.lastSampleT = now; cSample(now, lv); }
+      cComputeCenter(now);
+    }
+    // HUD
+    document.getElementById('c-bar').style.width = (lv.score * 100).toFixed(0) + '%';
+    document.getElementById('c-score').textContent = lv.score.toFixed(2);
+    document.getElementById('c-quality').textContent = (lv.quality * 100).toFixed(0) + ' %';
+    document.getElementById('c-ch').textContent = lv.channels + (lv.label ? ' · ' + lv.label.slice(0, 18) : '');
+    document.getElementById('c-center').textContent = (mc.centerVec && mc.centerQ01 > 0.12)
+      ? (mc.centerQ01 * 100).toFixed(0) + ' %' : 'Scan weiterführen';
+    const warn = [];
+    if (lv.clip) warn.push('Übersteuert!');
+    if (lv.agc) warn.push('Pegel evtl. automatisch geregelt');
+    if (lv.levelDb < -60) warn.push('Signal schwach');
+    document.getElementById('c-warn').textContent = warn.join(' · ');
+  }
+  cRender(now);
+  modeCRaf = requestAnimationFrame(modeCLoop);
+}
+
+function stopModeC() {
+  mc.active = false;
+  cancelAnimationFrame(modeCRaf);
+  if (meterC) { meterC.stop(); meterC = null; }
+  stopCamera(document.getElementById('camera'));
+  cClear();
+  document.getElementById('modeC').classList.add('hidden');
+  document.getElementById('gate').classList.remove('hidden');
+}
+
 function open3D() {
   state.view = '3d';
   document.getElementById('view3d').classList.remove('hidden');
@@ -1172,6 +1387,23 @@ function init() {
     if (tone) tone.setFreq(parseFloat(e.target.value) || 0);
     bClear(); // bei Frequenzwechsel alte Bänder verwerfen
   });
+
+  // Mode C: Akustische Taschenlampe
+  document.getElementById('btn-start-c').addEventListener('click', startModeC);
+  document.getElementById('c-close').addEventListener('click', stopModeC);
+  document.getElementById('c-clear').addEventListener('click', cClear);
+  const cFreezeBtn = document.getElementById('c-freeze');
+  cFreezeBtn.addEventListener('click', () => {
+    mc.frozen = !mc.frozen;
+    cFreezeBtn.textContent = mc.frozen ? 'Weiter' : 'Einfrieren';
+    cFreezeBtn.classList.toggle('armed', mc.frozen);
+  });
+  document.getElementById('c-input').addEventListener('change', (e) => {
+    cSetInput(e.target.value).catch((err) => {
+      document.getElementById('c-error').textContent = 'Eingang fehlgeschlagen: ' + (err && err.message || '');
+    });
+  });
+
   document.getElementById('btn-stop').addEventListener('click', stop);
   document.getElementById('btn-calibrate').addEventListener('click', startCalibration);
   document.getElementById('btn-center').addEventListener('click', recenter);

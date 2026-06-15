@@ -86,6 +86,7 @@
          an seiner realen Position.</p>
       <button id="btn-start" type="button">Starten</button>
       <button id="btn-start-b" type="button" class="secondary">🔊 Lokalisierung (B)</button>
+      <button id="btn-start-c" type="button" class="secondary">🔦 Akustische Taschenlampe (C)</button>
       <p id="gate-error" class="err"></p>
     </div>
   </div>
@@ -114,6 +115,33 @@
       <button id="b-close" type="button">Schließen</button>
     </div>
     <div id="b-hint">Zielfrequenz abspielen · Handy langsam bewegen (Kreis/seitlich) · Kamera auf die vermutete Quelle</div>
+  </div>
+
+  <!-- Mode C: Akustische Taschenlampe (eigener AR-Modus) -->
+  <div id="modeC" class="hidden">
+    <canvas id="c-canvas"></canvas>
+    <div id="c-crosshair" aria-hidden="true"><div class="ch-h"></div><div class="ch-v"></div><div class="ch-dot"></div></div>
+
+    <div id="c-hud">
+      <label class="c-input-row">Eingang
+        <select id="c-input"></select>
+      </label>
+      <div class="row"><span>Kanäle</span><b id="c-ch">–</b></div>
+      <div class="c-meter" aria-hidden="true"><div id="c-bar"></div></div>
+      <div class="row"><span>Score</span><b id="c-score">–</b></div>
+      <div class="row"><span>Qualität</span><b id="c-quality">–</b></div>
+      <div class="row"><span>Zentrum</span><b id="c-center">–</b></div>
+      <div id="c-warn"></div>
+    </div>
+
+    <p id="c-error" class="err"></p>
+
+    <div id="c-controls">
+      <button id="c-freeze" type="button">Einfrieren</button>
+      <button id="c-clear" type="button">Löschen</button>
+      <button id="c-close" type="button">Schließen</button>
+    </div>
+    <div id="c-hint">USB-Mikro auf die Quelle richten · langsam über die Szene schwenken · helle Bereiche = lautes Zielgeräusch</div>
   </div>
 
   <script type="module" src="/src/main.js"></script>
