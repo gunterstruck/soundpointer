@@ -16,6 +16,7 @@ export class LevelMeter {
     this.ctx = null; this.stream = null; this.source = null; this.analyser = null;
     this.td = null; this.fd = null; this.running = false;
     this.bandMax = 1e-9;          // langsam gleitendes Maximum zur Normalisierung
+    this.targetFreq = 0;          // 0 = Breitband (2–6 kHz), >0 = schmalbandig
     this.devLabel = ''; this.channels = 1;
     this.dbHist = [];             // für AGC-Verdacht
   }
@@ -29,6 +30,12 @@ export class LevelMeter {
 
   static isExternal(label) {
     return /rode|røde|usb|extern|interface|videomic|me-?c/i.test(label || '');
+  }
+
+  // Optionale Zielfrequenz (Hz). 0/leer = Breitband-Modus (2–6 kHz).
+  setTarget(freq) {
+    this.targetFreq = freq > 0 ? freq : 0;
+    this.bandMax = 1e-9; // Normalisierung zurücksetzen (Skala ändert sich)
   }
 
   async start(deviceId) {
@@ -66,21 +73,43 @@ export class LevelMeter {
 
     this.analyser.getFloatFrequencyData(this.fd);
     const binHz = this.ctx.sampleRate / this.analyser.fftSize;
-    let band = 0, total = 0;
-    for (let k = 1; k < this.fd.length; k++) {
-      const p = Math.pow(10, this.fd[k] / 10);
-      if (!isFinite(p)) continue;
-      total += p;
-      const f = k * binHz;
-      if (f >= TARGET_LO && f <= TARGET_HI) band += p;
+
+    let scoreRaw, bandRatio;
+    if (this.targetFreq > 0) {
+      // Schmalbandig: Ton-Prominenz = mittlere Leistung am Ziel / im Nachbarband.
+      const f0 = this.targetFreq;
+      const bw = Math.max(1.5 * binHz, 50);
+      let band = 0, nb = 0, guard = 0, ng = 0, total = 0;
+      for (let k = 1; k < this.fd.length; k++) {
+        const p = Math.pow(10, this.fd[k] / 10);
+        if (!isFinite(p)) continue;
+        total += p;
+        const df = Math.abs(k * binHz - f0);
+        if (df <= bw) { band += p; nb++; }
+        else if (df >= 100 && df <= 400) { guard += p; ng++; }
+      }
+      const bandAvg = nb ? band / nb : 0;
+      const guardAvg = ng ? guard / ng : 1e-12;
+      scoreRaw = bandAvg / (guardAvg + 1e-12); // lokaler SNR (distanz-/lautstärke-robust)
+      bandRatio = band / (total + 1e-12);
+    } else {
+      // Breitband: absolute Energie im Zielband 2–6 kHz.
+      let band = 0, total = 0;
+      for (let k = 1; k < this.fd.length; k++) {
+        const p = Math.pow(10, this.fd[k] / 10);
+        if (!isFinite(p)) continue;
+        total += p;
+        const f = k * binHz;
+        if (f >= TARGET_LO && f <= TARGET_HI) band += p;
+      }
+      scoreRaw = band;
+      bandRatio = band / (total + 1e-12);
     }
-    const bandRatio = band / (total + 1e-12);
+
     const levelDb = 20 * Math.log10(rms + 1e-7);
-    this.bandMax = Math.max(band, this.bandMax * 0.997); // langsamer Zerfall
-    const score = Math.max(0, Math.min(1, band / (this.bandMax + 1e-12)));
-    const quality = (clip ? 0.4 : 1)
-      * Math.max(0, Math.min(1, (levelDb + 70) / 45))
-      * Math.max(0.2, Math.min(1, bandRatio / 0.15));
+    this.bandMax = Math.max(scoreRaw, this.bandMax * 0.997); // langsamer Zerfall
+    const score = Math.max(0, Math.min(1, scoreRaw / (this.bandMax + 1e-12)));
+    const quality = (clip ? 0.4 : 1) * Math.max(0, Math.min(1, (levelDb + 70) / 45));
 
     // AGC-Verdacht: bei echtem Signal sollte der Pegel schwanken.
     this.dbHist.push(levelDb); if (this.dbHist.length > 45) this.dbHist.shift();
@@ -90,7 +119,7 @@ export class LevelMeter {
       let v = 0; for (const x of this.dbHist) v += (x - m) * (x - m);
       agc = Math.sqrt(v / this.dbHist.length) < 0.4;
     }
-    return { rms, levelDb, band, bandRatio, score, quality, clip, agc, channels: this.channels, label: this.devLabel };
+    return { rms, levelDb, bandRatio, score, quality, clip, agc, channels: this.channels, label: this.devLabel, targetFreq: this.targetFreq };
   }
 
   stop() {

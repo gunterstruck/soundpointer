@@ -1207,11 +1207,18 @@ async function cPopulateInputs() {
   if (mc.selectedDeviceId) sel.value = mc.selectedDeviceId;
 }
 
+function cApplyTarget() {
+  if (!meterC) return;
+  const f = parseFloat(document.getElementById('c-freq').value) || 0;
+  meterC.setTarget(f);
+}
+
 async function cSetInput(deviceId) {
   mc.selectedDeviceId = deviceId;
   if (meterC) meterC.stop();
   meterC = new LevelMeter();
   await meterC.start(deviceId);
+  cApplyTarget();
   cClear();
 }
 
@@ -1232,6 +1239,7 @@ async function startModeC() {
     if (mc.selectedDeviceId && mc.selectedDeviceId !== '') {
       try { await cSetInput(mc.selectedDeviceId); } catch (e) { /* behalte Default */ }
     }
+    cApplyTarget(); // evtl. vorausgefüllte Zielfrequenz übernehmen
     mc.active = true; mc.frozen = false;
     cClear();
     modeCLoop();
@@ -1407,6 +1415,7 @@ function init() {
       document.getElementById('c-error').textContent = 'Eingang fehlgeschlagen: ' + (err && err.message || '');
     });
   });
+  document.getElementById('c-freq').addEventListener('input', () => { cApplyTarget(); cClear(); });
 
   document.getElementById('btn-stop').addEventListener('click', stop);
   document.getElementById('btn-calibrate').addEventListener('click', startCalibration);

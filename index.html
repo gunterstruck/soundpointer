@@ -123,6 +123,9 @@
     <div id="c-crosshair" aria-hidden="true"><div class="ch-h"></div><div class="ch-v"></div><div class="ch-dot"></div></div>
 
     <div id="c-hud">
+      <label class="b-freq-inline">Ziel-f
+        <input id="c-freq" type="number" placeholder="2–6 kHz" min="50" max="12000" step="10" /> Hz
+      </label>
       <label class="c-input-row">Eingang
         <select id="c-input"></select>
       </label>
@@ -142,7 +145,7 @@
       <button id="c-clear" type="button">Löschen</button>
       <button id="c-close" type="button">Schließen</button>
     </div>
-    <div id="c-hint">USB-Mikro auf die Quelle richten · langsam über die Szene schwenken · helle Bereiche = lautes Zielgeräusch</div>
+    <div id="c-hint">Optional Ziel-Frequenz setzen (z. B. 2000 Hz) für selektive Suche · langsam über die Szene schwenken · helle Bereiche = lautes Zielgeräusch</div>
   </div>
 
   <script type="module" src="/src/main.js"></script>
