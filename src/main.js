@@ -400,6 +400,16 @@ function processAccel(ax, ay, az, gravityFree, intervalMs) {
   if (corrMag < ZUPT_ACC) state.stillTime += dt; else state.stillTime = 0;
   state.zupt = state.stillTime >= ZUPT_HOLD;
 
+  // Adaptive Drift-Korrektur: bei erkanntem Stillstand sollte die (schwerkraftfreie)
+  // Beschleunigung 0 sein -> jeder Rest ist Bias. Bias langsam nachführen, damit die
+  // Position über die Zeit nicht wegläuft (ersetzt häufiges Neu-Kalibrieren).
+  if (state.zupt) {
+    const k = Math.min(0.1, dt / 0.5);
+    state.accBias[0] += corr[0] * k;
+    state.accBias[1] += corr[1] * k;
+    state.accBias[2] += corr[2] * k;
+  }
+
   // Totzone (nur kleine Rest-Rausch-Werte auf 0), Vorzeichen bleibt erhalten.
   const dz = (v) => (Math.abs(v) < ACC_DEADZONE ? 0 : v);
   const aDev = [dz(corr[0]), dz(corr[1]), dz(corr[2])];
@@ -937,6 +947,12 @@ const B_MAX_BASELINE = 1.5;     // unplausibel großer Abstand (z. B. nach Zentr
 const B_MAX_PAIR_DT = 1800;     // max. Zeitabstand eines Paares (ms)
 const B_BAND_LIFE = 3000;       // Lebensdauer eines Bandes (ms) – schnelles Verblassen
 const B_MAX_BANDS = 60;
+// Voting-Akkumulator (Richtungs-Gitter) -> stabiles Zentrum aus vielen Bändern.
+const B_NAZ = 72, B_NEL = 37;   // Azimut 5°, Elevation 5°
+const B_ACCUM_TAU = 3.0;        // Zerfallszeit des Akkumulators (s)
+const B_PEAK_MIN = 0.6;         // Mindest-Peakwert, damit ein Zentrum gilt
+const B_PEAK_CONF = 4.0;        // Peak muss mind. N× über dem Mittel liegen
+const B_PEAK_SMOOTH = 0.15;     // Glättung der geschätzten Richtung
 
 function bTonePresent(l) {
   return !!l && l.snr > B_SNR_THRESH && l.mag > B_MAG_FLOOR;
@@ -945,6 +961,10 @@ function bTonePresent(l) {
 const bState = {
   windows: [],   // { t, pos:[x,y,z], phase, snr, present }
   bands: [],     // { axis:[x,y,z], cosA, halfWidth(rad), quality, t0 }
+  accum: new Float32Array(B_NAZ * B_NEL), // Richtungs-Voting
+  accumLast: 0,
+  peakVec: null, // geglättete Schätzrichtung (Weltvektor)
+  peakConf: 0,
 };
 
 function anyPerp(a) {
@@ -1002,17 +1022,75 @@ function bFormPair(now, cur) {
   const halfWidth = (6 + 24 * (1 - quality)) * DEG; // Band-/Hotspot-Dicke 6°..30°
 
   // Raumstabil als Kegel speichern (Achse = Weltvektor); KEINE kamera-nahe Einzelauswahl.
-  bState.bands.push({ axis, cosA, halfWidth, quality, t0: now });
+  const band = { axis, cosA, halfWidth, quality, t0: now };
+  bState.bands.push(band);
   while (bState.bands.length > B_MAX_BANDS) bState.bands.shift();
+  bAddConeToAccum(band); // Kegel ins Richtungs-Voting eintragen
 }
 
 function bClear() {
   bState.bands.length = 0;
   bState.windows.length = 0;
+  bState.accum.fill(0);
+  bState.peakVec = null;
+  bState.peakConf = 0;
 }
 
 function cross3(a, b) {
   return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+}
+
+// Kegel (gesamte Lösungsmenge) ins Richtungs-Gitter eintragen (gewichtet mit Qualität).
+function bAddConeToAccum(band) {
+  const a = band.axis, cosA = band.cosA;
+  const sinA = Math.sqrt(Math.max(0, 1 - cosA * cosA));
+  const p = anyPerp(a), q = cross3(a, p);
+  const STEPS = 240;
+  for (let i = 0; i < STEPS; i++) {
+    const th = (i / STEPS) * 2 * Math.PI;
+    const ct = Math.cos(th), st = Math.sin(th);
+    const u0 = cosA * a[0] + sinA * (ct * p[0] + st * q[0]);
+    const u1 = cosA * a[1] + sinA * (ct * p[1] + st * q[1]);
+    const u2 = cosA * a[2] + sinA * (ct * p[2] + st * q[2]);
+    const { azimuth, elevation } = vectorToSpherical([u0, u1, u2]);
+    const ai = Math.min(B_NAZ - 1, Math.floor(((azimuth % 360) + 360) % 360 / 5));
+    const ej = Math.min(B_NEL - 1, Math.max(0, Math.round((elevation + 90) / 5)));
+    bState.accum[ej * B_NAZ + ai] += band.quality;
+  }
+}
+
+// Akkumulator zerfallen lassen und das Maximum (= wahrscheinlichste Quellrichtung) finden.
+function bUpdatePeak(now) {
+  const dt = bState.accumLast ? (now - bState.accumLast) / 1000 : 0;
+  bState.accumLast = now;
+  const decay = Math.exp(-dt / B_ACCUM_TAU);
+  const acc = bState.accum;
+  let maxV = 0, maxIdx = -1, sum = 0;
+  for (let k = 0; k < acc.length; k++) {
+    acc[k] *= decay;
+    sum += acc[k];
+    if (acc[k] > maxV) { maxV = acc[k]; maxIdx = k; }
+  }
+  const mean = sum / acc.length;
+  if (maxIdx >= 0 && maxV > B_PEAK_MIN && maxV > B_PEAK_CONF * mean) {
+    const ej = Math.floor(maxIdx / B_NAZ), ai = maxIdx % B_NAZ;
+    const nv = sphericalToVector(ai * 5 + 2.5, -90 + ej * 5);
+    if (!bState.peakVec) {
+      bState.peakVec = nv;
+    } else {
+      const s = B_PEAK_SMOOTH;
+      const v = [
+        bState.peakVec[0] + (nv[0] - bState.peakVec[0]) * s,
+        bState.peakVec[1] + (nv[1] - bState.peakVec[1]) * s,
+        bState.peakVec[2] + (nv[2] - bState.peakVec[2]) * s,
+      ];
+      bState.peakVec = normalize3(v);
+    }
+    bState.peakConf = maxV / (mean + 1e-6);
+  } else {
+    bState.peakVec = null;
+    bState.peakConf = 0;
+  }
 }
 
 // HOTSPOT (Debug/Vergleich): wählt aus dem Kegel die Richtung nahe der Blickrichtung
@@ -1111,6 +1189,23 @@ function bRenderBands(now) {
     if (mode === 'hotspot' || mode === 'combined') bDrawHotspot(band, invQ, fwd, fade);
   }
   bCtx.globalCompositeOperation = 'source-over';
+
+  // Stabiles Zentrum aus der Überlagerung (Voting) zeichnen.
+  bUpdatePeak(now);
+  if (bState.peakVec) {
+    const proj = cameraRayToScreen(Quat.rotateVec(invQ, bState.peakVec));
+    if (proj) {
+      const conf = Math.min(1, (bState.peakConf - B_PEAK_CONF) / 8 + 0.3);
+      bCtx.strokeStyle = `rgba(25,227,106,${0.6 * conf + 0.3})`;
+      bCtx.lineWidth = 3;
+      bCtx.beginPath(); bCtx.arc(proj.px, proj.py, 26, 0, Math.PI * 2); bCtx.stroke();
+      bCtx.fillStyle = `rgba(25,227,106,${0.7 * conf + 0.3})`;
+      bCtx.beginPath(); bCtx.arc(proj.px, proj.py, 6, 0, Math.PI * 2); bCtx.fill();
+      bCtx.font = '12px -apple-system, sans-serif';
+      bCtx.fillStyle = 'rgba(25,227,106,0.95)';
+      bCtx.fillText('Quelle?', proj.px + 32, proj.py + 4);
+    }
+  }
 }
 
 async function startModeB() {
@@ -1166,6 +1261,8 @@ function modeBLoop() {
   }
   bRenderBands(now);
   document.getElementById('b-count').textContent = String(bState.bands.length);
+  document.getElementById('b-peak').textContent =
+    bState.peakVec ? 'Konfidenz ' + bState.peakConf.toFixed(1) + '×' : '–';
   document.getElementById('b-rate').textContent =
     state.motionHz ? state.motionHz.toFixed(0) + ' Hz' + (state.motionSource === 'Sensor-API 60Hz' ? ' · API' : ' · DM') : '–';
   modeBRaf = requestAnimationFrame(modeBLoop);
