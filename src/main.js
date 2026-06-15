@@ -1339,7 +1339,11 @@ function modeCLoop() {
     document.getElementById('c-bar').style.width = (lv.score * 100).toFixed(0) + '%';
     document.getElementById('c-score').textContent = lv.score.toFixed(2);
     document.getElementById('c-quality').textContent = (lv.quality * 100).toFixed(0) + ' %';
-    document.getElementById('c-ch').textContent = lv.channels + (lv.label ? ' · ' + lv.label.slice(0, 18) : '');
+    const ext = LevelMeter.isExternal(lv.label);
+    const micEl = document.getElementById('c-mic');
+    micEl.textContent = (lv.label ? lv.label.slice(0, 22) : 'Standard') + (ext ? ' · USB extern ✓' : ' · intern');
+    micEl.style.color = ext ? '#19e36a' : '#ffb24a';
+    document.getElementById('c-ch').textContent = String(lv.channels);
     document.getElementById('c-center').textContent = (mc.centerVec && mc.centerQ01 > 0.12)
       ? (mc.centerQ01 * 100).toFixed(0) + ' %' : 'Scan weiterführen';
     const warn = [];
