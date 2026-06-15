@@ -935,7 +935,7 @@ const B_MAG_FLOOR = 2e-4;       // absolute Untergrenze (~ -74 dB) gegen Stille/
 const B_MIN_BASELINE = 0.04;    // Mindest-Bewegungsabstand für ein Paar (m)
 const B_MAX_BASELINE = 1.5;     // unplausibel großer Abstand (z. B. nach Zentrieren) -> verwerfen
 const B_MAX_PAIR_DT = 1800;     // max. Zeitabstand eines Paares (ms)
-const B_BAND_LIFE = 6000;       // Lebensdauer eines Bandes (ms)
+const B_BAND_LIFE = 3000;       // Lebensdauer eines Bandes (ms) – schnelles Verblassen
 const B_MAX_BANDS = 60;
 
 function bTonePresent(l) {
