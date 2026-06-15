@@ -221,7 +221,8 @@ const state = {
   gravityFree: false,          // liefert das Gerät schwerkraftfreie Beschleunigung?
   accMag: 0,                   // aktueller Betrag |a| (m/s²) – zur Überprüfung
   motionHz: 0,                 // gemessene Lieferrate des Beschleunigungssensors (Hz)
-  motionInterval: 0,           // vom Gerät gemeldetes Sample-Intervall (ms)
+  motionInterval: 0,           // gemeldetes Sample-Intervall (ms)
+  motionSource: 'DeviceMotion',// 'Sensor-API 60Hz' oder 'DeviceMotion'
   lastMotionT: 0,
   stillTime: 0,                // wie lange die Beschleunigung schon klein ist (s)
   zupt: false,                 // Stillstand erkannt -> Geschwindigkeit genullt
@@ -341,9 +342,10 @@ function onOrientation(ev, absolute) {
   state.hasOrientation = true;
 }
 
-// Beschleunigung -> Position (experimentelles 6DoF, doppelte Integration).
-function onMotion(ev) {
-  // Tatsächliche Sensorrate messen (Lieferrate ans JS + vom Gerät gemeldetes Intervall).
+// Gemeinsame Verarbeitung einer Beschleunigungsmessung (Geräteachsen, m/s²).
+// gravityFree = true: Schwerkraft bereits entfernt (für Positionsintegration nutzbar).
+function processAccel(ax, ay, az, gravityFree, intervalMs) {
+  // Tatsächliche Sensorrate messen.
   const tnow = performance.now();
   state._hzCount = (state._hzCount || 0) + 1;
   if (!state._hzT) state._hzT = tnow;
@@ -351,27 +353,19 @@ function onMotion(ev) {
     state.motionHz = (state._hzCount * 1000) / (tnow - state._hzT);
     state._hzCount = 0; state._hzT = tnow;
   }
-  if (ev.interval) state.motionInterval = ev.interval;
-
-  const acc = ev.acceleration;                  // OHNE Schwerkraft (vom OS entfernt)
-  const accG = ev.accelerationIncludingGravity; // MIT Schwerkraft (roh)
-
-  if (acc && (acc.x != null || acc.y != null || acc.z != null)) {
-    state.gravityFree = true; // gut: Schwerkraft ist bereits herausgerechnet
-  } else if (accG && (accG.x != null || accG.y != null || accG.z != null)) {
-    // Gerät liefert nur Werte MIT Schwerkraft -> Position nicht zuverlässig trackbar.
-    state.motionSupported = true;
-    state.gravityFree = false;
-    state.accMag = Math.hypot(accG.x || 0, accG.y || 0, accG.z || 0);
-    return;
-  } else {
-    return;
-  }
+  if (intervalMs) state.motionInterval = intervalMs;
 
   state.motionSupported = true;
+  if (!gravityFree) {
+    // Werte enthalten die Schwerkraft -> Position nicht zuverlässig trackbar.
+    state.gravityFree = false;
+    state.accMag = Math.hypot(ax, ay, az);
+    return;
+  }
+  state.gravityFree = true;
   state.hasMotion = true;
 
-  const raw = [acc.x || 0, acc.y || 0, acc.z || 0];
+  const raw = [ax, ay, az];
   state.accMag = Math.hypot(raw[0], raw[1], raw[2]); // sollte bei Ruhe ~0 sein
 
   // Kalibrierung: bei stillem Handy Messwerte sammeln -> Mittelwert = Bias.
@@ -400,8 +394,7 @@ function onMotion(ev) {
   const corrMag = Math.hypot(corr[0], corr[1], corr[2]);
 
   // ZUPT (Zero-Velocity Update): bleibt die Beschleunigung lange genug klein,
-  // steht das Handy -> Geschwindigkeit auf 0 zwingen. Das verhindert, dass nach
-  // Beschleunigen/Bremsen eine Rest-Geschwindigkeit den Punkt weiterlaufen lässt.
+  // steht das Handy -> Geschwindigkeit auf 0 zwingen.
   if (corrMag < ZUPT_ACC) state.stillTime += dt; else state.stillTime = 0;
   state.zupt = state.stillTime >= ZUPT_HOLD;
 
@@ -409,10 +402,7 @@ function onMotion(ev) {
   const dz = (v) => (Math.abs(v) < ACC_DEADZONE ? 0 : v);
   const aDev = [dz(corr[0]), dz(corr[1]), dz(corr[2])];
 
-  // In Weltkoordinaten drehen und doppelt integrieren.
-  // Geschwindigkeits-Dämpfung (zeitbasiert): ohne anhaltende Beschleunigung
-  // zerfällt die Geschwindigkeit Richtung 0 -> stoppt das Weiterlaufen, auch
-  // wenn ZUPT (wegen Hand-Zittern) nicht auslöst.
+  // In Weltkoordinaten drehen, doppelt integrieren, Geschwindigkeit dämpfen.
   const damp = Math.exp(-dt / VEL_TAU);
   const aW = Quat.rotateVec(state.devQuat, aDev);
   for (let i = 0; i < 3; i++) {
@@ -420,6 +410,52 @@ function onMotion(ev) {
     state.velocity[i] = (state.velocity[i] + aW[i] * dt) * damp;
   }
   if (state.zupt) state.velocity = [0, 0, 0];
+}
+
+// Fallback-Quelle: DeviceMotionEvent (z. B. iOS Safari). Rate ~60 Hz, vom Browser gedeckelt.
+function onMotion(ev) {
+  const acc = ev.acceleration;                  // OHNE Schwerkraft (vom OS entfernt)
+  const accG = ev.accelerationIncludingGravity; // MIT Schwerkraft (roh)
+  if (acc && (acc.x != null || acc.y != null || acc.z != null)) {
+    processAccel(acc.x || 0, acc.y || 0, acc.z || 0, true, ev.interval || 0);
+  } else if (accG && (accG.x != null || accG.y != null || accG.z != null)) {
+    processAccel(accG.x || 0, accG.y || 0, accG.z || 0, false, ev.interval || 0);
+  }
+}
+
+function isIOS() {
+  const ua = navigator.userAgent || '';
+  return /iPad|iPhone|iPod/.test(ua)
+    || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1); // iPadOS
+}
+
+// Bevorzugte Quelle auf Nicht-iOS: Generic Sensor API mit EXPLIZIT 60 Hz,
+// schwerkraftfrei. Fällt bei Fehlern/iOS auf DeviceMotionEvent zurück.
+let accelSensor = null;
+function startMotionSource() {
+  if (!isIOS() && typeof window.LinearAccelerationSensor === 'function') {
+    try {
+      accelSensor = new LinearAccelerationSensor({ frequency: 60 });
+      accelSensor.addEventListener('reading', () => {
+        processAccel(accelSensor.x || 0, accelSensor.y || 0, accelSensor.z || 0, true, 1000 / 60);
+      });
+      accelSensor.addEventListener('error', (e) => {
+        console.warn('LinearAccelerationSensor error:', e.error && e.error.name);
+        accelSensor = null;
+        state.motionSource = 'DeviceMotion';
+        if (window.DeviceMotionEvent) window.addEventListener('devicemotion', onMotion);
+      });
+      accelSensor.start();
+      state.motionSource = 'Sensor-API 60Hz';
+      return;
+    } catch (e) {
+      console.warn('LinearAccelerationSensor unavailable:', e);
+      accelSensor = null;
+    }
+  }
+  // Fallback (iOS Safari oder keine Sensor-API)
+  state.motionSource = 'DeviceMotion';
+  if (window.DeviceMotionEvent) window.addEventListener('devicemotion', onMotion);
 }
 
 // Bias-Kalibrierung: 2 s lang stillhalten, Offset mitteln und künftig abziehen.
@@ -496,10 +532,8 @@ async function initSensors() {
   }
   window.addEventListener('deviceorientation', (e) => onOrientation(e, false));
 
-  // Bewegung (Beschleunigung) für das Positions-Experiment.
-  if (window.DeviceMotionEvent) {
-    window.addEventListener('devicemotion', onMotion);
-  }
+  // Bewegung: bevorzugt Generic Sensor API mit 60 Hz, sonst DeviceMotion (iOS).
+  startMotionSource();
 
   state.sensorsInitialized = true;
   return state.absoluteSupported;
@@ -776,8 +810,8 @@ function updateDebug() {
   if (state.motionSupported) {
     const tag = state.gravityFree ? 'g-frei ✓' : 'mit g!';
     dbg.amag.textContent = state.accMag.toFixed(3) + ' m/s² · ' + tag;
-    const iv = state.motionInterval ? ` (${(1000 / state.motionInterval).toFixed(0)})` : '';
-    dbg.rate.textContent = state.motionHz ? state.motionHz.toFixed(0) + ' Hz' + iv : '–';
+    const src = state.motionSource === 'Sensor-API 60Hz' ? ' · API' : ' · DM';
+    dbg.rate.textContent = state.motionHz ? state.motionHz.toFixed(0) + ' Hz' + src : '–';
   } else {
     dbg.amag.textContent = 'n/a';
     dbg.rate.textContent = 'n/a';
@@ -1059,7 +1093,7 @@ function modeBLoop() {
   bRenderBands(now);
   document.getElementById('b-count').textContent = String(bState.bands.length);
   document.getElementById('b-rate').textContent =
-    state.motionHz ? state.motionHz.toFixed(0) + ' Hz' : '–';
+    state.motionHz ? state.motionHz.toFixed(0) + ' Hz' + (state.motionSource === 'Sensor-API 60Hz' ? ' · API' : ' · DM') : '–';
   modeBRaf = requestAnimationFrame(modeBLoop);
 }
 
