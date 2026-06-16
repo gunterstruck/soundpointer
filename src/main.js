@@ -1253,7 +1253,8 @@ async function startModeC() {
 function cClear() { mc.samples = []; mc.centerVec = null; mc.centerQ01 = 0; }
 
 function cSample(now, lv) {
-  if (lv.quality < mc.minQuality) return;
+  // Nur sammeln, wenn ein Ton wirklich heraussticht (kein Hotspot aus Rauschen).
+  if (lv.quality < mc.minQuality || lv.score < 0.08) return;
   mc.samples.push({ t: now, direction: cMicDirection(), score: lv.score, quality: lv.quality, levelDb: lv.levelDb });
   // Alte/überzählige Samples entfernen.
   const cutoff = now - mc.fadeTauMs * 3;
@@ -1281,25 +1282,19 @@ function cRender(now) {
   cCtx.clearRect(0, 0, W, H);
 
   const invQ = Quat.conjugate(state.quat);
-  // Gewichte + Maximum.
-  let maxW = 1e-9; const wts = new Array(mc.samples.length);
-  for (let i = 0; i < mc.samples.length; i++) {
-    const s = mc.samples[i];
-    const w = s.score * s.quality * Math.exp(-(now - s.t) / mc.fadeTauMs);
-    wts[i] = w; if (w > maxW) maxW = w;
-  }
-  // Heatmap-Blobs.
+  // Heatmap-Blobs mit ABSOLUTEM Gewicht (kein relatives Maximum -> bei Stille nichts).
   const dot = cGetDot();
   const r = Math.max(26, W * 0.08);
   cCtx.globalCompositeOperation = 'lighter';
   for (let i = 0; i < mc.samples.length; i++) {
-    const w = wts[i];
-    if (w < maxW * 0.12) continue;
-    const cam = Quat.rotateVec(invQ, mc.samples[i].direction);
+    const s = mc.samples[i];
+    const w = s.score * s.quality * Math.exp(-(now - s.t) / mc.fadeTauMs); // 0..1
+    if (w < 0.06) continue;
+    const cam = Quat.rotateVec(invQ, s.direction);
     if (cam[2] >= -0.02) continue;
     const proj = cameraRayToScreen(cam);
     if (!proj) continue;
-    cCtx.globalAlpha = Math.min(0.6, 0.1 + 0.6 * (w / maxW));
+    cCtx.globalAlpha = Math.min(0.6, 0.12 + 0.7 * w);
     cCtx.drawImage(dot, proj.px - r, proj.py - r, 2 * r, 2 * r);
   }
   cCtx.globalAlpha = 1;
@@ -1345,7 +1340,8 @@ function modeCLoop() {
     }
     // HUD
     document.getElementById('c-bar').style.width = (lv.score * 100).toFixed(0) + '%';
-    document.getElementById('c-score').textContent = lv.score.toFixed(2);
+    document.getElementById('c-score').textContent =
+      lv.score.toFixed(2) + (lv.targetFreq > 0 ? ' · ' + lv.promDb.toFixed(0) + ' dB' : '');
     document.getElementById('c-quality').textContent = (lv.quality * 100).toFixed(0) + ' %';
     const ext = LevelMeter.isExternal(lv.label);
     const micEl = document.getElementById('c-mic');
@@ -1357,7 +1353,7 @@ function modeCLoop() {
     const warn = [];
     if (lv.clip) warn.push('Übersteuert!');
     if (lv.agc) warn.push('Pegel evtl. automatisch geregelt');
-    if (lv.levelDb < -60) warn.push('Signal schwach');
+    if (lv.targetFreq > 0 && lv.promDb < 4) warn.push('kein Zielton erkannt');
     document.getElementById('c-warn').textContent = warn.join(' · ');
   }
   cRender(now);

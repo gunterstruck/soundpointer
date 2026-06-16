@@ -10,6 +10,8 @@
 'use strict';
 
 const TARGET_LO = 2000, TARGET_HI = 6000; // Zielband (Hz)
+const PROM_LO = 4, PROM_HI = 18;          // Ton-Prominenz (dB) -> Score 0..1
+const LVL_LO = -50, LVL_HI = -12;         // Breitband-Lautstärke (dB) -> Score 0..1
 
 export class LevelMeter {
   constructor() {
@@ -77,9 +79,10 @@ export class LevelMeter {
     this.analyser.getFloatFrequencyData(this.fd);
     const binHz = this.ctx.sampleRate / this.analyser.fftSize;
 
-    let scoreRaw, bandRatio;
+    let scoreNow, bandRatio, promDb;
+    const levelDb = 20 * Math.log10(rms + 1e-7);
     if (this.targetFreq > 0) {
-      // Schmalbandig: Ton-Prominenz = mittlere Leistung am Ziel / im Nachbarband.
+      // Schmalbandig: ABSOLUTE Ton-Prominenz = Leistung am Ziel ggü. Nachbarband (dB).
       const f0 = this.targetFreq;
       const bw = Math.max(2 * binHz, 30); // enges Zielband (~±30 Hz)
       let band = 0, nb = 0, guard = 0, ng = 0, total = 0;
@@ -93,25 +96,17 @@ export class LevelMeter {
       }
       const bandAvg = nb ? band / nb : 0;
       const guardAvg = ng ? guard / ng : 1e-12;
-      scoreRaw = bandAvg / (guardAvg + 1e-12); // lokaler SNR (distanz-/lautstärke-robust)
+      promDb = 10 * Math.log10((bandAvg + 1e-12) / (guardAvg + 1e-12));
+      // 0..1 erst ab spürbarer Prominenz: Rauschen (~0 dB) -> 0, klarer Ton -> 1.
+      scoreNow = Math.max(0, Math.min(1, (promDb - PROM_LO) / (PROM_HI - PROM_LO)));
       bandRatio = band / (total + 1e-12);
     } else {
-      // Breitband: absolute Energie im Zielband 2–6 kHz.
-      let band = 0, total = 0;
-      for (let k = 1; k < this.fd.length; k++) {
-        const p = Math.pow(10, this.fd[k] / 10);
-        if (!isFinite(p)) continue;
-        total += p;
-        const f = k * binHz;
-        if (f >= TARGET_LO && f <= TARGET_HI) band += p;
-      }
-      scoreRaw = band;
-      bandRatio = band / (total + 1e-12);
+      // Breitband: absolute Lautstärke (kein relatives Maximum -> kein Hotspot bei Stille).
+      promDb = levelDb;
+      scoreNow = Math.max(0, Math.min(1, (levelDb - LVL_LO) / (LVL_HI - LVL_LO)));
+      bandRatio = 0;
     }
 
-    const levelDb = 20 * Math.log10(rms + 1e-7);
-    this.bandMax = Math.max(scoreRaw, this.bandMax * 0.997); // langsamer Zerfall
-    const scoreNow = Math.max(0, Math.min(1, scoreRaw / (this.bandMax + 1e-12)));
     this.scoreEma += (scoreNow - this.scoreEma) * 0.35; // leichte zeitliche Glättung
     const score = this.scoreEma;
     const quality = (clip ? 0.4 : 1) * Math.max(0, Math.min(1, (levelDb + 70) / 45));
@@ -124,7 +119,7 @@ export class LevelMeter {
       let v = 0; for (const x of this.dbHist) v += (x - m) * (x - m);
       agc = Math.sqrt(v / this.dbHist.length) < 0.4;
     }
-    return { rms, levelDb, bandRatio, score, quality, clip, agc, channels: this.channels, label: this.devLabel, targetFreq: this.targetFreq };
+    return { rms, levelDb, promDb, bandRatio, score, quality, clip, agc, channels: this.channels, label: this.devLabel, targetFreq: this.targetFreq };
   }
 
   stop() {
