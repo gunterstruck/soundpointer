@@ -2,7 +2,7 @@
  * SoundPointer – Modus D: VIO-gestütztes virtuelles Array + Triangulation
  * ------------------------------------------------------------------
  * Position der virtuellen Mikrofone kommt aus WebXR/ARCore-Pose (NICHT aus
- * Beschleunigungs-Integration). Pro geführtem Kreis (~5 s) entsteht aus
+ * Beschleunigungs-Integration). Pro geführtem Kreis (~2 s) entsteht aus
  * VIO-Positionen + kohärenten Phasen eine Richtungsschätzung (Beamforming via
  * lineare Kleinste-Quadrate auf die ebene-Wellen-Hypothese). Aus 2–4 Kreisen
  * von verschiedenen Standorten wird per Strahlenschnitt (Triangulation) ein
@@ -18,8 +18,9 @@ import { CoherentTone } from './coherent.js';
 
 const C_SOUND = 343;
 const TWO_PI = Math.PI * 2;
-const MEAS_MS = 5000;        // Dauer eines Kreises
-const MID_LO = 1500, MID_HI = 4200; // Mittelbogen-Fenster (ms ab Kreisstart)
+const MEAS_MS = 2000;        // Dauer eines Kreises
+// Mittelbogen-Fenster relativ zur Messdauer (Anfang/Ende mit Beschleunigung weglassen)
+const MID_LO = MEAS_MS * 0.30, MID_HI = MEAS_MS * 0.84; // ms ab Kreisstart
 const MIN_SAMPLES = 12;
 const TARGET_CIRCLES = 3;
 
