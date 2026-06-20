@@ -365,6 +365,10 @@ html, body {
 .c-meter { margin: 8px 0; height: 14px; border-radius: 999px; background: rgba(255,255,255,0.1); overflow: hidden; }
 #c-bar { height: 100%; width: 0%; border-radius: 999px; background: linear-gradient(90deg, #ffd23f, #ff6e32); transition: width 0.08s linear; }
 #c-warn { margin-top: 6px; font-size: 12px; color: #ff8c4a; min-height: 1em; }
+#c-usb-badge { margin-bottom: 8px; padding: 5px 8px; border-radius: 6px; font-size: 12px; font-weight: 600; line-height: 1.3; }
+#c-usb-badge.usb-ok { background: rgba(25,227,106,0.18); color: #19e36a; border: 1px solid rgba(25,227,106,0.5); }
+#c-usb-badge.usb-warn { background: rgba(255,178,74,0.15); color: #ffb24a; border: 1px solid rgba(255,178,74,0.4); }
+#c-usb-badge.hidden { display: none; }
 #c-controls {
   position: absolute; bottom: max(16px, env(safe-area-inset-bottom)); left: 50%;
   transform: translateX(-50%); display: flex; gap: 10px;

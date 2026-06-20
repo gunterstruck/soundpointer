@@ -1,25 +1,29 @@
 /*
  * SoundPointer – Mode C "Akustische Taschenlampe": Pegel-/Zielscore-Messung
  * ------------------------------------------------------------------
- * Misst pro Zeitfenster den Pegel (RMS) und die Energie im Zielband (2–6 kHz)
+ * Misst pro Zeitfenster den Pegel (RMS) und die Energie im HF-Band (≥8 kHz)
  * eines (bevorzugt externen, gerichteten) Mikrofons. Daraus entsteht ein
  * normalisierter Score 0..1 für die Richtungs-Heatmap. KEINE Phase/Position –
  * nur Lautstärke in Blickrichtung. Robust gegen Sensordrift.
+ *
+ * Ohne Zielfrequenz: automatische Suche nach dominantem Ton im HF-Band.
+ * Mit Zielfrequenz: schmalbandig auf diese Frequenz (ideal ≥ 8000 Hz).
  */
 
 'use strict';
 
-const TARGET_LO = 2000, TARGET_HI = 6000; // Zielband (Hz)
-const PROM_LO = 4, PROM_HI = 18;          // Ton-Prominenz (dB) -> Score 0..1
-const LVL_LO = -50, LVL_HI = -12;         // Breitband-Lautstärke (dB) -> Score 0..1
+const HF_LO = 8000;   // Hochfrequenz-Suchband (Hz) – Anfang
+const HF_HI = 20000;  // Hochfrequenz-Suchband (Hz) – Ende
+const PROM_LO = 4, PROM_HI = 18; // Ton-Prominenz (dB über Rauschboden) -> Score 0..1
 
 export class LevelMeter {
   constructor() {
     this.ctx = null; this.stream = null; this.source = null; this.analyser = null;
     this.td = null; this.fd = null; this.running = false;
     this.bandMax = 1e-9;          // langsam gleitendes Maximum zur Normalisierung
-    this.targetFreq = 0;          // 0 = Breitband (2–6 kHz), >0 = schmalbandig
+    this.targetFreq = 0;          // 0 = Auto-HF-Suche (≥8 kHz), >0 = schmalbandig
     this.scoreEma = 0;            // geglätteter Score (ruhiger im Lärm)
+    this.autoFreq = 0;            // automatisch erkannte Dominanzfrequenz im HF-Band
     this.devLabel = ''; this.channels = 1;
     this.dbHist = [];             // für AGC-Verdacht
   }
@@ -32,7 +36,7 @@ export class LevelMeter {
   }
 
   static isExternal(label) {
-    return /rode|røde|usb|extern|interface|videomic|me-?c/i.test(label || '');
+    return /rode|røde|usb|extern|interface|videomic|me-?c|audio|zoom|focusrite|scarlett|tascam|behringer/i.test(label || '');
   }
 
   // Optionale Zielfrequenz (Hz). 0/leer = Breitband-Modus (2–6 kHz).
@@ -101,10 +105,24 @@ export class LevelMeter {
       scoreNow = Math.max(0, Math.min(1, (promDb - PROM_LO) / (PROM_HI - PROM_LO)));
       bandRatio = band / (total + 1e-12);
     } else {
-      // Breitband: absolute Lautstärke (kein relatives Maximum -> kein Hotspot bei Stille).
-      promDb = levelDb;
-      scoreNow = Math.max(0, Math.min(1, (levelDb - LVL_LO) / (LVL_HI - LVL_LO)));
-      bandRatio = 0;
+      // HF-Auto-Modus: sucht dominante Frequenz in HF_LO..HF_HI, bewertet Prominenz.
+      const hfLo = Math.max(1, Math.round(HF_LO / binHz));
+      const hfHi = Math.min(this.fd.length - 1, Math.round(HF_HI / binHz));
+      let peakBin = hfLo, peakDb = -Infinity, hfPow = 0, hfCount = 0;
+      for (let k = hfLo; k <= hfHi; k++) {
+        const dbk = this.fd[k];
+        if (!isFinite(dbk)) continue;
+        const p = Math.pow(10, dbk / 10);
+        hfPow += p; hfCount++;
+        if (dbk > peakDb) { peakDb = dbk; peakBin = k; }
+      }
+      const hfNoiseDb = hfCount > 0 ? 10 * Math.log10(hfPow / hfCount + 1e-12) : -80;
+      promDb = isFinite(peakDb) ? peakDb - hfNoiseDb : 0;
+      // Frequenz-Tracking mit Glättung (verhindert Springen)
+      const detectedF = peakBin * binHz;
+      this.autoFreq = this.autoFreq > 0 ? this.autoFreq * 0.85 + detectedF * 0.15 : detectedF;
+      scoreNow = Math.max(0, Math.min(1, (promDb - PROM_LO) / (PROM_HI - PROM_LO)));
+      bandRatio = hfCount > 0 ? hfPow / (Math.pow(10, levelDb / 10) * hfCount + 1e-12) : 0;
     }
 
     this.scoreEma += (scoreNow - this.scoreEma) * 0.35; // leichte zeitliche Glättung
@@ -119,7 +137,7 @@ export class LevelMeter {
       let v = 0; for (const x of this.dbHist) v += (x - m) * (x - m);
       agc = Math.sqrt(v / this.dbHist.length) < 0.4;
     }
-    return { rms, levelDb, promDb, bandRatio, score, quality, clip, agc, channels: this.channels, label: this.devLabel, targetFreq: this.targetFreq };
+    return { rms, levelDb, promDb, bandRatio, score, quality, clip, agc, channels: this.channels, label: this.devLabel, targetFreq: this.targetFreq, autoFreq: this.autoFreq };
   }
 
   stop() {

@@ -1197,15 +1197,26 @@ async function cPopulateInputs() {
   const sel = document.getElementById('c-input');
   const list = await LevelMeter.listInputs();
   sel.innerHTML = '';
-  let preferred = null;
+  let preferred = null, preferredLabel = '';
   for (const d of list) {
     const o = document.createElement('option');
-    o.value = d.deviceId; o.textContent = d.label;
+    o.value = d.deviceId;
+    const ext = LevelMeter.isExternal(d.label);
+    o.textContent = (ext ? '⭐ ' : '') + d.label;
     sel.appendChild(o);
-    if (!preferred && LevelMeter.isExternal(d.label)) preferred = d.deviceId;
+    if (!preferred && ext) { preferred = d.deviceId; preferredLabel = d.label; }
   }
   mc.selectedDeviceId = preferred || (list[0] && list[0].deviceId) || null;
   if (mc.selectedDeviceId) sel.value = mc.selectedDeviceId;
+  // USB-Badge sofort anzeigen wenn externes Mikro gefunden
+  const badge = document.getElementById('c-usb-badge');
+  if (preferred) {
+    badge.textContent = '🎙 USB-Mikrofon erkannt: ' + preferredLabel;
+    badge.className = 'usb-ok';
+  } else {
+    badge.textContent = '⚠ Kein USB-Mikrofon – internes Mikrofon aktiv';
+    badge.className = 'usb-warn';
+  }
 }
 
 function cApplyTarget() {
@@ -1342,11 +1353,20 @@ function modeCLoop() {
     // HUD
     document.getElementById('c-bar').style.width = (lv.score * 100).toFixed(0) + '%';
     document.getElementById('c-score').textContent =
-      lv.score.toFixed(2) + (lv.targetFreq > 0 ? ' · ' + lv.promDb.toFixed(0) + ' dB' : '');
+      lv.score.toFixed(2) + ' · ' + lv.promDb.toFixed(1) + ' dB Prom.';
+    // Auto-Frequenz anzeigen (nur im Breitband-Modus relevant)
+    const afEl = document.getElementById('c-autofreq');
+    if (lv.targetFreq > 0) {
+      afEl.textContent = lv.targetFreq.toFixed(0) + ' Hz (Ziel)';
+    } else if (lv.autoFreq > 0) {
+      afEl.textContent = (lv.autoFreq / 1000).toFixed(1) + ' kHz (auto)';
+    } else {
+      afEl.textContent = '–';
+    }
     document.getElementById('c-quality').textContent = (lv.quality * 100).toFixed(0) + ' %';
     const ext = LevelMeter.isExternal(lv.label);
     const micEl = document.getElementById('c-mic');
-    micEl.textContent = (lv.label ? lv.label.slice(0, 22) : 'Standard') + (ext ? ' · USB extern ✓' : ' · intern');
+    micEl.textContent = (lv.label ? lv.label.slice(0, 26) : 'Standard') + (ext ? ' ✓' : ' · intern');
     micEl.style.color = ext ? '#19e36a' : '#ffb24a';
     document.getElementById('c-ch').textContent = String(lv.channels);
     document.getElementById('c-center').textContent = (mc.centerVec && mc.centerQ01 > 0.12)
@@ -1355,6 +1375,7 @@ function modeCLoop() {
     if (lv.clip) warn.push('Übersteuert!');
     if (lv.agc) warn.push('Pegel evtl. automatisch geregelt');
     if (lv.targetFreq > 0 && lv.promDb < 4) warn.push('kein Zielton erkannt');
+    if (!ext) warn.push('USB-Mikrofon empfohlen für HF');
     document.getElementById('c-warn').textContent = warn.join(' · ');
   }
   cRender(now);

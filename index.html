@@ -124,8 +124,9 @@
     <div id="c-crosshair" aria-hidden="true"><div class="ch-h"></div><div class="ch-v"></div><div class="ch-dot"></div></div>
 
     <div id="c-hud">
+      <div id="c-usb-badge" class="hidden"></div>
       <label class="b-freq-inline">Ziel-f
-        <input id="c-freq" type="number" placeholder="2–6 kHz" min="50" max="12000" step="10" /> Hz
+        <input id="c-freq" type="number" placeholder="opt. ≥8000" min="1000" max="20000" step="100" /> Hz
       </label>
       <label class="c-input-row">Eingang
         <select id="c-input"></select>
@@ -134,6 +135,7 @@
       <div class="row"><span>Kanäle</span><b id="c-ch">–</b></div>
       <div class="c-meter" aria-hidden="true"><div id="c-bar"></div></div>
       <div class="row"><span>Score</span><b id="c-score">–</b></div>
+      <div class="row"><span>Auto-f</span><b id="c-autofreq">–</b></div>
       <div class="row"><span>Qualität</span><b id="c-quality">–</b></div>
       <div class="row"><span>Zentrum</span><b id="c-center">–</b></div>
       <div id="c-warn"></div>
@@ -146,7 +148,7 @@
       <button id="c-clear" type="button">Löschen</button>
       <button id="c-close" type="button">Schließen</button>
     </div>
-    <div id="c-hint">Optional Ziel-Frequenz setzen (z. B. 2000 Hz) für selektive Suche · langsam über die Szene schwenken · helle Bereiche = lautes Zielgeräusch</div>
+    <div id="c-hint">HF-Modus ≥8 kHz · ohne Zielfrequenz: auto-Suche · optional Zielton setzen (z. B. 12000 Hz) · langsam schwenken · helle Bereiche = lautes HF-Signal · USB-Mikrofon empfohlen</div>
   </div>
 
   <!-- Modus D: VIO-gestütztes virtuelles Array + Triangulation (WebXR DOM-Overlay-Root) -->
