@@ -99,11 +99,13 @@ const md = {
   freq: 1200,
   session: null, refSpace: null, gl: null, xrLayer: null,
   posePos: null, viewMat: null, projMat: null,
+  poseHistory: [],        // [{t, pos}] – Ringpuffer für Zeit-Alignment Audio↔Pose
+  audioLatency: 150,      // ms – geschätzte Audio-Eingangslatenz (wird nach Start gesetzt)
   phase: 'idle',          // 'idle' | 'countdown' | 'measuring'
   countdownEnd: 0,
   measEndT: 0, measStartT: 0,
   cur: null,              // aktuelle Kreismessung: { samples:[{t,pos,phase,amp,snr}] }
-  circles: [],            // [{ center, dir, coh, sigTheta, samples }]
+  circles: [],            // [{ center, dir, coh, sigTheta, deltaF, samples }]
   source: null,           // { point:[3], cov:[9], axes:[{dir,len}], depthSigma }
   tone: null,
   arCtx: null, inCtx: null,
@@ -161,12 +163,15 @@ function onXRFrame(t, frame) {
   gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
   const pose = frame.getViewerPose(md.refSpace);
-  if (pose) {
+  if (pose && !pose.emulatedPosition) {
     const p = pose.transform.position;
     md.posePos = [p.x, p.y, p.z];
     const view = pose.views[0];
     md.projMat = view.projectionMatrix;
     md.viewMat = view.transform.inverse.matrix;
+    // Pose in Ringpuffer schreiben (für Audio-Zeit-Alignment)
+    md.poseHistory.push({ t: performance.now(), pos: md.posePos.slice() });
+    if (md.poseHistory.length > 120) md.poseHistory.shift(); // ~2 s bei 60 fps
   }
   // Mess-Timing
   const now = performance.now();
@@ -182,10 +187,31 @@ function onXRFrame(t, frame) {
   updateHud();
 }
 
+/* ---------- Pose-Interpolation auf Audio-Aufnahmezeit ---------- */
+function interpolatePose(tAudio) {
+  const h = md.poseHistory;
+  if (h.length === 0) return md.posePos;
+  if (h.length === 1 || tAudio <= h[0].t) return h[0].pos;
+  if (tAudio >= h[h.length - 1].t) return h[h.length - 1].pos;
+  // Binäre Suche nach Bracket
+  let lo = 0, hi = h.length - 1;
+  while (hi - lo > 1) {
+    const mid = (lo + hi) >> 1;
+    if (h[mid].t <= tAudio) lo = mid; else hi = mid;
+  }
+  const f = (tAudio - h[lo].t) / (h[hi].t - h[lo].t);
+  const a = h[lo].pos, b = h[hi].pos;
+  return [a[0] + f * (b[0] - a[0]), a[1] + f * (b[1] - a[1]), a[2] + f * (b[2] - a[2])];
+}
+
 /* ---------- Audio-Sample-Erfassung ---------- */
 function onAudioWindow(wnd) {
-  if (md.phase !== 'measuring' || !md.cur || !md.posePos) return;
-  md.cur.samples.push({ t: wnd.t, pos: md.posePos.slice(), phase: wnd.phase, amp: wnd.amp, snr: wnd.snr });
+  if (md.phase !== 'measuring' || !md.cur) return;
+  // Audio-Aufnahmezeit = Callback-Zeit minus geschätzte Eingangslatenz
+  const tAudio = wnd.t - md.audioLatency;
+  const pos = interpolatePose(tAudio);
+  if (!pos) return;
+  md.cur.samples.push({ t: wnd.t, pos: pos.slice(), phase: wnd.phase, amp: wnd.amp, snr: wnd.snr });
 }
 
 /* ---------- Pro Kreis: Richtungsschätzung ---------- */
@@ -202,39 +228,48 @@ function fitDirection(samplesAll) {
     d -= TWO_PI * Math.round(d / TWO_PI);
     ph[i] = ph[i - 1] + d;
   }
-  // Zentrum
+  // Orts- und Zeitzentrum
   const center = [0, 0, 0];
   for (const x of s) { center[0] += x.pos[0]; center[1] += x.pos[1]; center[2] += x.pos[2]; }
   center[0] /= s.length; center[1] /= s.length; center[2] /= s.length;
-  // Lineare KQ:  phase_i = phi0 - sx*px - sy*py - sz*pz   (p relativ zum Zentrum)
-  const ATA = new Array(16).fill(0), ATb = new Array(4).fill(0);
+  const tCenter = s[Math.floor(s.length / 2)].t;
+  // Lineare KQ mit Drift-Term:  phase_i = φ₀ + α·Δt − sx·px − sy·py − sz·pz
+  // Δt in Sekunden (zentriert), p relativ zum Ortszentrum
+  // Unbekannte: [φ₀, α, sx, sy, sz]  (n=5)
+  const ATA = new Array(25).fill(0), ATb = new Array(5).fill(0);
   let spanMax = 0;
   for (let i = 0; i < s.length; i++) {
     const p = sub(s[i].pos, center);
-    const a = [1, -p[0], -p[1], -p[2]];
+    const dt = (s[i].t - tCenter) / 1000;
+    const a = [1, dt, -p[0], -p[1], -p[2]];
     const w = Math.max(0.2, Math.min(3, s[i].snr));
-    for (let r = 0; r < 4; r++) { for (let cc = 0; cc < 4; cc++) ATA[r * 4 + cc] += w * a[r] * a[cc]; ATb[r] += w * a[r] * ph[i]; }
+    for (let r = 0; r < 5; r++) { for (let cc = 0; cc < 5; cc++) ATA[r * 5 + cc] += w * a[r] * a[cc]; ATb[r] += w * a[r] * ph[i]; }
     const sp = Math.hypot(p[0], p[1], p[2]); if (sp > spanMax) spanMax = sp;
   }
-  const x = solveLinear(ATA, ATb, 4);
+  const x = solveLinear(ATA, ATb, 5);
   if (!x) return null;
-  const sVec = [x[1], x[2], x[3]];
+  const sVec = [x[2], x[3], x[4]]; // räumlicher Gradient
   const sMag = Math.hypot(sVec[0], sVec[1], sVec[2]);
   if (sMag < 1e-6) return null;
+  const k = TWO_PI * md.freq / C_SOUND;
+  const kRatio = sMag / k;
+  // Plausibilitäts-Gate: |s|/k sollte nahe 1 sein (ebene Welle)
+  if (kRatio < 0.4 || kRatio > 2.5) return null;
   const dir = [sVec[0] / sMag, sVec[1] / sMag, sVec[2] / sMag];
-  // Residuum -> Kohärenz, Winkelunsicherheit
+  const deltaF = x[1] / TWO_PI; // Frequenzabweichung in Hz
+  // Residuum (nach Abzug beider Terme) -> Kohärenz, Winkelunsicherheit
   let res2 = 0;
   for (let i = 0; i < s.length; i++) {
     const p = sub(s[i].pos, center);
-    const pred = x[0] - (sVec[0] * p[0] + sVec[1] * p[1] + sVec[2] * p[2]);
+    const dt = (s[i].t - tCenter) / 1000;
+    const pred = x[0] + x[1] * dt - (sVec[0] * p[0] + sVec[1] * p[1] + sVec[2] * p[2]);
     const r = ph[i] - pred; res2 += r * r;
   }
   const rmsRes = Math.sqrt(res2 / s.length);
-  const k = TWO_PI * md.freq / C_SOUND;
   const coh = Math.max(0, Math.min(1, 1 - rmsRes / (Math.PI * 0.6)));
   const aperture = Math.max(0.1, 2 * spanMax);
   const sigTheta = Math.max(0.05, Math.min(0.8, rmsRes / (k * aperture + 1e-6)));
-  return { center, dir, coh, sigTheta, n: s.length, kRatio: sMag / k };
+  return { center, dir, coh, sigTheta, deltaF, kRatio, n: s.length };
 }
 
 /* ---------- Triangulation ---------- */
@@ -280,11 +315,14 @@ function startCircle() {
 function finishCircle() {
   md.phase = 'idle';
   const fit = md.cur ? fitDirection(md.cur.samples) : null;
-  if (fit) { fit.samples = md.cur.samples; md.circles.push(fit); triangulate(); setStatus('Kreis ' + md.circles.length + ' ok · Standort wechseln'); }
-  else setStatus('Kreis verworfen (zu wenig/instabiles Signal) – wiederholen');
+  if (fit) {
+    fit.samples = md.cur.samples; md.circles.push(fit); triangulate();
+    const dfStr = Math.abs(fit.deltaF) < 5 ? (fit.deltaF > 0 ? '+' : '') + fit.deltaF.toFixed(2) + ' Hz Drift' : '⚠ Δf=' + fit.deltaF.toFixed(1) + ' Hz';
+    setStatus('Kreis ' + md.circles.length + ' ok · ' + dfStr + ' · Standort wechseln');
+  } else setStatus('Kreis verworfen (instabiles Signal oder |k|-Plausibilität) – wiederholen');
   md.cur = null;
 }
-function resetD() { md.circles = []; md.source = null; md.cur = null; md.phase = 'idle'; md.countdownEnd = 0; setStatus('zurückgesetzt'); }
+function resetD() { md.circles = []; md.source = null; md.cur = null; md.phase = 'idle'; md.countdownEnd = 0; md.poseHistory = []; setStatus('zurückgesetzt'); }
 
 let statusUntil = 0, statusMsg = '';
 function setStatus(m) { statusMsg = m; statusUntil = performance.now() + 4000; }
@@ -408,7 +446,7 @@ function updateHud() {
   // Ampel: VIO-Fehler über Apertur (~3 cm) vs λ/8
   const lambda = C_SOUND / md.freq, budget = lambda / 8, vioErr = 0.03;
   const amp = vioErr <= budget * 0.7 ? '🟢' : vioErr <= budget ? '🟡' : '🔴';
-  set('md-budget', `${amp} λ/8=${(budget * 100).toFixed(1)}cm · VIO~${(vioErr * 100).toFixed(0)}cm`);
+  set('md-budget', `${amp} λ/8=${(budget * 100).toFixed(1)}cm · VIO~${(vioErr * 100).toFixed(0)}cm · Lat ${md.audioLatency.toFixed(0)}ms`);
   set('md-circles', md.circles.length + ' / ' + TARGET_CIRCLES);
   // Basislinie zwischen Kreiszentren
   let baseline = 0;
@@ -484,6 +522,7 @@ async function startModeD() {
     md.tone = new CoherentTone();
     md.tone.onWindow = onAudioWindow;
     await md.tone.start(md.freq, null);   // internes Handy-Mikro (bewegtes Array)
+    md.audioLatency = md.tone.getLatencyMs();
     await startSession();                 // WebXR/ARCore
     resetD();
     setStatus('Session aktiv – Kreis 1 aufnehmen');

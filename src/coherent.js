@@ -41,6 +41,13 @@ export class CoherentTone {
 
   setFreq(freq) { if (freq > 0) { this.freq = freq; this.w = (TWO_PI * freq) / this.sr; } }
 
+  // Geschätzte Eingangslatenz in ms (Audio-Aufnahmezeit = Callback-Zeit minus Latenz)
+  getLatencyMs() {
+    if (!this.ctx) return 150;
+    const blockMs = (2048 / this.sr) * 1000;
+    return ((this.ctx.baseLatency || 0) + (this.ctx.outputLatency || 0)) * 1000 + blockMs / 2;
+  }
+
   _process(e) {
     const input = e.inputBuffer.getChannelData(0);
     const N = input.length, w = this.w;
