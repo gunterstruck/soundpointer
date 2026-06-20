@@ -395,6 +395,13 @@ function drawAR() {
       ctx.fillStyle = 'rgba(25,227,106,0.95)';
       ctx.beginPath(); ctx.moveTo(20, 0); ctx.lineTo(-13, 11); ctx.lineTo(-13, -11); ctx.closePath(); ctx.fill();
       ctx.restore();
+      // Beschriftung: Distanz + Schwenk-Hinweis
+      const d = Math.hypot(ex, ey, ez);
+      const hint = ez >= 0 ? 'umdrehen' : 'hierhin schwenken';
+      ctx.fillStyle = 'rgba(25,227,106,0.95)';
+      ctx.font = '13px -apple-system, sans-serif'; ctx.textAlign = 'center';
+      ctx.fillText('Quelle ' + d.toFixed(1) + ' m · ' + hint, cx, cy);
+      ctx.textAlign = 'start';
     }
   }
 }
@@ -460,6 +467,15 @@ function drawInspector() {
 
 /* ---------- HUD ---------- */
 function dist(a, b) { return Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]); }
+// Quellpunkt in Kamerakoordinaten (Blick = -Z, oben = +Y)
+function eyeCoords(p) {
+  const vm = md.viewMat; if (!vm) return null;
+  return [
+    vm[0] * p[0] + vm[4] * p[1] + vm[8] * p[2] + vm[12],
+    vm[1] * p[0] + vm[5] * p[1] + vm[9] * p[2] + vm[13],
+    vm[2] * p[0] + vm[6] * p[1] + vm[10] * p[2] + vm[14],
+  ];
+}
 function updateHud() {
   const now = performance.now();
   const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
@@ -478,7 +494,18 @@ function updateHud() {
     set('md-dist', r.toFixed(1) + ' m · Tiefe ±' + md.source.depthSigma.toFixed(1) + ' m');
     const cohAvg = md.circles.reduce((a, x) => a + x.coh, 0) / md.circles.length;
     set('md-coh', (cohAvg * 100).toFixed(0) + ' %');
-  } else { set('md-dist', '–'); set('md-coh', '–'); }
+    // Lage des Quellpunkts relativ zur aktuellen Blickrichtung (Diagnose)
+    const e = eyeCoords(md.source.point);
+    if (e) {
+      const d = Math.hypot(e[0], e[1], e[2]);
+      const front = e[2] < 0;
+      const hAng = Math.atan2(e[0], -e[2]) * 180 / Math.PI; // + = rechts
+      const vAng = Math.atan2(e[1], Math.hypot(e[0], e[2])) * 180 / Math.PI; // + = oben
+      const hTxt = Math.abs(hAng) < 8 ? 'mittig' : (hAng > 0 ? hAng.toFixed(0) + '° rechts' : (-hAng).toFixed(0) + '° links');
+      const vTxt = Math.abs(vAng) < 8 ? '' : (vAng > 0 ? ' · ' + vAng.toFixed(0) + '° hoch' : ' · ' + (-vAng).toFixed(0) + '° runter');
+      set('md-src', `${d.toFixed(1)} m · ${front ? 'vorne' : 'HINTER dir'} · ${hTxt}${vTxt}`);
+    } else set('md-src', '–');
+  } else { set('md-dist', '–'); set('md-coh', '–'); set('md-src', '–'); }
   // Konditionierungs-Warnung
   const warn = [];
   if (md.source) { let r = 0, c = 0; for (const cc of md.circles) { r += dist(md.source.point, cc.center); c++; } r = c ? r / c : 0; if (baseline < 0.4 * r) warn.push('Basislinie zu klein – weiter versetzt messen'); }
