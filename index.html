@@ -87,6 +87,7 @@
       <button id="btn-start" type="button">Starten</button>
       <button id="btn-start-b" type="button" class="secondary">🔊 Lokalisierung (B)</button>
       <button id="btn-start-c" type="button" class="secondary">🔦 Akustische Taschenlampe (C)</button>
+      <button id="btn-start-d" type="button" class="secondary">🛰️ Virtuelles Array + Triangulation (D)</button>
       <p id="gate-error" class="err"></p>
     </div>
   </div>
@@ -146,6 +147,35 @@
       <button id="c-close" type="button">Schließen</button>
     </div>
     <div id="c-hint">Optional Ziel-Frequenz setzen (z. B. 2000 Hz) für selektive Suche · langsam über die Szene schwenken · helle Bereiche = lautes Zielgeräusch</div>
+  </div>
+
+  <!-- Modus D: VIO-gestütztes virtuelles Array + Triangulation (WebXR DOM-Overlay-Root) -->
+  <div id="modeD" class="hidden">
+    <canvas id="md-ar"></canvas>
+    <canvas id="md-inspector" class="hidden"></canvas>
+
+    <div id="md-hud">
+      <label class="b-freq-inline">Ziel-f
+        <input id="md-freq" type="number" value="1200" min="200" max="4000" step="10" /> Hz
+      </label>
+      <div class="row"><span>Status</span><b id="md-status">–</b></div>
+      <div class="row"><span>Budget</span><b id="md-budget">–</b></div>
+      <div class="row"><span>Kreise</span><b id="md-circles">0 / 3</b></div>
+      <div class="row"><span>Basislinie</span><b id="md-baseline">–</b></div>
+      <div class="row"><span>Entfernung</span><b id="md-dist">–</b></div>
+      <div class="row"><span>Kohärenz</span><b id="md-coh">–</b></div>
+      <div id="md-warn"></div>
+    </div>
+
+    <p id="md-error" class="err"></p>
+
+    <div id="md-controls">
+      <button id="md-capture" type="button">Kreis aufnehmen</button>
+      <button id="md-3d" type="button">3D-Ansicht</button>
+      <button id="md-reset" type="button">Zurücksetzen</button>
+      <button id="md-close" type="button">Schließen</button>
+    </div>
+    <div id="md-hint">Kreis (Ø ~0,5 m, ~5 s) · Standort mehrere Meter wechseln · 3 Kreise → Quellpunkt</div>
   </div>
 
   <script type="module" src="/src/main.js"></script>

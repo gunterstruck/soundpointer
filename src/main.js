@@ -27,6 +27,7 @@ import './style.css';
 import { View3D } from './view3d.js';
 import { TargetTone } from './audio.js';
 import { LevelMeter } from './audioLevel.js';
+import { initModeD } from './modeD.js';
 
 /* ============================================================= *
  *  Minimale Vektor-/Quaternion-Mathematik
@@ -1397,6 +1398,8 @@ function init() {
   });
 
   // Mode C: Akustische Taschenlampe
+  initModeD(); // Modus D: VIO-Array + Triangulation (eigenständiges Modul)
+
   document.getElementById('btn-start-c').addEventListener('click', startModeC);
   document.getElementById('c-close').addEventListener('click', stopModeC);
   document.getElementById('c-clear').addEventListener('click', cClear);

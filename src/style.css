@@ -388,6 +388,42 @@ html, body {
   color: #ff6b6b; font-size: 14px; text-align: center; max-width: 80vw;
 }
 
+/* Modus D – VIO-Array + Triangulation (WebXR DOM-Overlay-Root) */
+#modeD { position: fixed; inset: 0; z-index: 8; }
+#modeD.hidden { display: none; }
+#md-ar { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+#md-inspector { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; background: #0b1418; }
+#md-inspector.hidden { display: none; }
+#md-hud {
+  position: absolute; top: max(12px, env(safe-area-inset-top)); left: 12px;
+  width: min(74vw, 330px); padding: 10px 12px;
+  background: rgba(0, 0, 0, 0.5); border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 10px; font-size: 13px; line-height: 1.5;
+  backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px); font-variant-numeric: tabular-nums;
+}
+#md-hud .row { display: flex; justify-content: space-between; gap: 12px; }
+#md-hud .row span { color: rgba(255, 255, 255, 0.65); }
+#md-hud .row b { color: #36c6ff; font-weight: 600; }
+#md-warn { margin-top: 6px; font-size: 12px; color: #ff8c4a; min-height: 1em; }
+#md-controls {
+  position: absolute; bottom: max(16px, env(safe-area-inset-bottom)); left: 50%;
+  transform: translateX(-50%); display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; max-width: 96vw;
+}
+#md-controls button {
+  appearance: none; border: 1px solid rgba(255, 255, 255, 0.25); background: rgba(0, 0, 0, 0.55);
+  color: #fff; padding: 10px 16px; border-radius: 999px; font-size: 14px;
+  backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px);
+}
+#md-controls button.armed { background: rgba(54, 198, 255, 0.4); }
+#md-controls button:disabled { opacity: 0.5; }
+#md-hint {
+  position: absolute; bottom: calc(max(16px, env(safe-area-inset-bottom)) + 52px); left: 50%;
+  transform: translateX(-50%); width: max-content; max-width: 94vw; text-align: center;
+  font-size: 11px; color: rgba(255, 255, 255, 0.6); background: rgba(0, 0, 0, 0.4);
+  padding: 6px 12px; border-radius: 999px; pointer-events: none;
+}
+#md-error { position: absolute; top: 40%; left: 50%; transform: translateX(-50%); color: #ff6b6b; font-size: 14px; text-align: center; max-width: 80vw; }
+
 .gate-card button.secondary {
   margin-top: 12px;
   background: transparent;
