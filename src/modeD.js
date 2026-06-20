@@ -99,7 +99,8 @@ const md = {
   freq: 1200,
   session: null, refSpace: null, gl: null, xrLayer: null,
   posePos: null, viewMat: null, projMat: null,
-  phase: 'idle',          // 'idle' | 'measuring'
+  phase: 'idle',          // 'idle' | 'countdown' | 'measuring'
+  countdownEnd: 0,
   measEndT: 0, measStartT: 0,
   cur: null,              // aktuelle Kreismessung: { samples:[{t,pos,phase,amp,snr}] }
   circles: [],            // [{ center, dir, coh, sigTheta, samples }]
@@ -161,7 +162,14 @@ function onXRFrame(t, frame) {
     md.viewMat = view.transform.inverse.matrix;
   }
   // Mess-Timing
-  if (md.phase === 'measuring' && performance.now() >= md.measEndT) finishCircle();
+  const now = performance.now();
+  if (md.phase === 'countdown' && now >= md.countdownEnd) {
+    md.cur = { samples: [] };
+    md.phase = 'measuring';
+    md.measStartT = now;
+    md.measEndT = now + MEAS_MS;
+  }
+  if (md.phase === 'measuring' && now >= md.measEndT) finishCircle();
   drawAR();
   if (md.inspector) drawInspector();
   updateHud();
@@ -258,10 +266,9 @@ function triangulate() {
 /* ---------- Messablauf ---------- */
 function startCircle() {
   if (!md.session) return;
-  md.cur = { samples: [] };
-  md.phase = 'measuring';
-  md.measStartT = performance.now();
-  md.measEndT = md.measStartT + MEAS_MS;
+  md.phase = 'countdown';
+  md.countdownEnd = performance.now() + 3000; // 3-Sek-Vorlauf
+  md.cur = null;
 }
 function finishCircle() {
   md.phase = 'idle';
@@ -270,7 +277,7 @@ function finishCircle() {
   else setStatus('Kreis verworfen (zu wenig/instabiles Signal) – wiederholen');
   md.cur = null;
 }
-function resetD() { md.circles = []; md.source = null; md.cur = null; md.phase = 'idle'; setStatus('zurückgesetzt'); }
+function resetD() { md.circles = []; md.source = null; md.cur = null; md.phase = 'idle'; md.countdownEnd = 0; setStatus('zurückgesetzt'); }
 
 let statusUntil = 0, statusMsg = '';
 function setStatus(m) { statusMsg = m; statusUntil = performance.now() + 4000; }
@@ -291,6 +298,17 @@ function drawAR() {
   if (cv.width !== W * dpr || cv.height !== H * dpr) { cv.width = W * dpr; cv.height = H * dpr; }
   const ctx = md.arCtx; ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, W, H);
 
+  // Vorbereitungs-Countdown (3-2-1)
+  if (md.phase === 'countdown') {
+    const remain = Math.ceil((md.countdownEnd - performance.now()) / 1000);
+    ctx.fillStyle = 'rgba(0,0,0,0.45)'; ctx.fillRect(W / 2 - 90, H / 2 - 80, 180, 130);
+    ctx.fillStyle = 'rgba(255,180,80,0.97)'; ctx.font = '700 96px -apple-system, sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText(remain, W / 2, H / 2 + 30);
+    ctx.font = '16px -apple-system, sans-serif';
+    ctx.fillStyle = 'rgba(255,255,255,0.9)';
+    ctx.fillText('Kreis vorbereiten …', W / 2, H / 2 + 70);
+    ctx.textAlign = 'start';
+  }
   // Guidance-Kreis + Countdown während der Messung
   if (md.phase === 'measuring') {
     const remain = (md.measEndT - performance.now()) / 1000;
@@ -401,7 +419,8 @@ function updateHud() {
   if (md.source) { let r = 0, c = 0; for (const cc of md.circles) { r += dist(md.source.point, cc.center); c++; } r = c ? r / c : 0; if (baseline < 0.4 * r) warn.push('Basislinie zu klein – weiter versetzt messen'); }
   if (md.circles.length < 2) warn.push('≥ 2 Kreise nötig für einen Punkt');
   set('md-warn', warn.join(' · '));
-  set('md-status', now < statusUntil ? statusMsg : (md.phase === 'measuring' ? 'Messung läuft …' : 'bereit – „Kreis aufnehmen"'));
+  const statusIdle = md.phase === 'countdown' ? 'Vorbereitung …' : md.phase === 'measuring' ? 'Messung läuft …' : 'bereit – „Kreis aufnehmen"';
+  set('md-status', now < statusUntil ? statusMsg : statusIdle);
 }
 
 /* ---------- Inspector-Orbit-Eingabe ---------- */
@@ -449,6 +468,10 @@ async function startModeD() {
   document.getElementById('modeD').classList.remove('hidden');
   md.arCtx = document.getElementById('md-ar').getContext('2d');
   md.inCtx = document.getElementById('md-inspector').getContext('2d');
+  // Inspector-State explizit zurücksetzen (persistiert sonst über Sessions)
+  md.inspector = false;
+  document.getElementById('md-inspector').classList.add('hidden');
+  document.getElementById('md-3d').classList.remove('armed');
   try {
     md.freq = parseFloat(document.getElementById('md-freq').value) || 1200;
     md.tone = new CoherentTone();
