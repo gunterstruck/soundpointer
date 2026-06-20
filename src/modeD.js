@@ -392,7 +392,7 @@ function drawInspector() {
   const W = cv.clientWidth, H = cv.clientHeight;
   if (cv.width !== W * dpr || cv.height !== H * dpr) { cv.width = W * dpr; cv.height = H * dpr; }
   const ctx = md.inCtx; ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctx.fillStyle = '#0b1418'; ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = 'rgba(11,20,24,0.72)'; ctx.fillRect(0, 0, W, H);
 
   // Punktwolke einsammeln
   const pts = [];
