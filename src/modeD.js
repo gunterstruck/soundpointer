@@ -153,6 +153,13 @@ function onXRFrame(t, frame) {
   const session = md.session;
   if (!session) return;
   session.requestAnimationFrame(onXRFrame);
+
+  // XR-GL-Framebuffer transparent leeren → ARCore-Kamera durchscheinen lassen
+  const gl = md.gl;
+  gl.bindFramebuffer(gl.FRAMEBUFFER, md.xrLayer.framebuffer);
+  gl.clearColor(0, 0, 0, 0);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
   const pose = frame.getViewerPose(md.refSpace);
   if (pose) {
     const p = pose.transform.position;
