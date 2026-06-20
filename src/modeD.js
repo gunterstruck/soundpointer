@@ -237,8 +237,12 @@ function fitDirection(samplesAll) {
   // Lineare KQ mit Drift-Term:  phase_i = φ₀ + α·Δt − sx·px − sy·py − sz·pz
   // Δt in Sekunden (zentriert), p relativ zum Ortszentrum
   // Unbekannte: [φ₀, α, sx, sy, sz]  (n=5)
-  const ATA = new Array(25).fill(0), ATb = new Array(5).fill(0);
+  // Minimale Apertur prüfen (Kreis muss mindestens 8 cm Durchmesser haben)
   let spanMax = 0;
+  for (const x of s) { const d = Math.hypot(x.pos[0] - center[0], x.pos[1] - center[1], x.pos[2] - center[2]); if (d > spanMax) spanMax = d; }
+  if (spanMax < 0.04) return null; // < 4 cm Radius → Handy kaum bewegt
+  const ATA = new Array(25).fill(0), ATb = new Array(5).fill(0);
+  spanMax = 0;
   for (let i = 0; i < s.length; i++) {
     const p = sub(s[i].pos, center);
     const dt = (s[i].t - tCenter) / 1000;
@@ -317,10 +321,17 @@ function finishCircle() {
   md.phase = 'idle';
   const fit = md.cur ? fitDirection(md.cur.samples) : null;
   if (fit) {
-    fit.samples = md.cur.samples; md.circles.push(fit); triangulate();
+    fit.samples = md.cur.samples;
+    // Warnen wenn neuer Kreis zu nah an bestehenden Kreisen (< 0.5 m)
+    let tooClose = false;
+    for (const c of md.circles) {
+      if (Math.hypot(fit.center[0] - c.center[0], fit.center[1] - c.center[1], fit.center[2] - c.center[2]) < 0.5) { tooClose = true; break; }
+    }
+    md.circles.push(fit); triangulate();
     const dfStr = Math.abs(fit.deltaF) < 5 ? (fit.deltaF > 0 ? '+' : '') + fit.deltaF.toFixed(2) + ' Hz Drift' : '⚠ Δf=' + fit.deltaF.toFixed(1) + ' Hz';
-    setStatus('Kreis ' + md.circles.length + ' ok · ' + dfStr + ' · Standort wechseln');
-  } else setStatus('Kreis verworfen (instabiles Signal oder |k|-Plausibilität) – wiederholen');
+    if (tooClose) setStatus('Kreis ' + md.circles.length + ' ok · aber ⚠ zu nah am vorherigen! ≥0,5 m versetzt aufnehmen');
+    else setStatus('Kreis ' + md.circles.length + ' ok · ' + dfStr + ' · Standort wechseln');
+  } else setStatus('Kreis verworfen (instabiles Signal, Handy zu wenig bewegt, oder |k|-Plausibilität) – wiederholen');
   md.cur = null;
 }
 function resetD() { md.circles = []; md.source = null; md.cur = null; md.phase = 'idle'; md.countdownEnd = 0; md.poseHistory = []; setStatus('zurückgesetzt'); }
@@ -442,10 +453,10 @@ function drawInspector() {
     ctx.strokeStyle = 'rgba(54,198,255,0.7)'; ctx.beginPath();
     c.samples.forEach((s, i) => { const q = pr(s.pos); if (i === 0) ctx.moveTo(q[0], q[1]); else ctx.lineTo(q[0], q[1]); });
     ctx.stroke();
-    // Zentrum + Richtungsstrahl
+    // Zentrum + Richtungsstrahl (dir zeigt WEG von der Quelle → negieren)
     const oc = pr(c.center);
     ctx.fillStyle = '#36c6ff'; ctx.beginPath(); ctx.arc(oc[0], oc[1], 4, 0, TWO_PI); ctx.fill();
-    const end = [c.center[0] + c.dir[0] * ext, c.center[1] + c.dir[1] * ext, c.center[2] + c.dir[2] * ext];
+    const end = [c.center[0] - c.dir[0] * ext, c.center[1] - c.dir[1] * ext, c.center[2] - c.dir[2] * ext];
     const oe = pr(end);
     ctx.strokeStyle = `rgba(255,180,80,${0.4 + 0.5 * c.coh})`;
     ctx.beginPath(); ctx.moveTo(oc[0], oc[1]); ctx.lineTo(oe[0], oe[1]); ctx.stroke();
