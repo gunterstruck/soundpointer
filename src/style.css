@@ -409,7 +409,7 @@ html, body {
 #md-warn { margin-top: 6px; font-size: 12px; color: #ff8c4a; min-height: 1em; }
 /* 2×2-Grid, höher positioniert, immer über dem Inspector-Canvas */
 #md-controls {
-  position: absolute; bottom: max(36px, env(safe-area-inset-bottom) + 20px); left: 50%;
+  position: absolute; bottom: max(90px, env(safe-area-inset-bottom) + 74px); left: 50%;
   transform: translateX(-50%);
   display: grid; grid-template-columns: 1fr 1fr; gap: 8px;
   width: min(92vw, 360px); z-index: 10;
@@ -422,7 +422,7 @@ html, body {
 #md-controls button.armed { background: rgba(54, 198, 255, 0.4); }
 #md-controls button:disabled { opacity: 0.5; }
 #md-hint {
-  position: absolute; bottom: calc(max(36px, env(safe-area-inset-bottom) + 20px) + 110px); left: 50%;
+  position: absolute; bottom: calc(max(90px, env(safe-area-inset-bottom) + 74px) + 110px); left: 50%;
   transform: translateX(-50%); width: max-content; max-width: 94vw; text-align: center;
   font-size: 11px; color: rgba(255, 255, 255, 0.6); background: rgba(0, 0, 0, 0.4);
   padding: 6px 12px; border-radius: 999px; pointer-events: none; z-index: 10;

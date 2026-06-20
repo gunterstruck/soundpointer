@@ -365,16 +365,36 @@ function drawAR() {
     ctx.fillText('im Kreis bewegen (Ø ~0,5 m)', W / 2, H / 2 + 60);
     ctx.textAlign = 'start';
   }
-  // Quellpunkt
-  if (md.source) {
+  // Quellpunkt – im Bild: grüner Marker; außerhalb: Randpfeil
+  if (md.source && md.viewMat && md.projMat) {
     const proj = projectWorld(md.source.point, W, H);
-    if (proj) {
+    const margin = 40;
+    const inView = proj && proj.x >= margin && proj.x <= W - margin && proj.y >= margin && proj.y <= H - margin;
+    if (inView) {
       ctx.strokeStyle = 'rgba(25,227,106,0.95)'; ctx.lineWidth = 3;
       ctx.beginPath(); ctx.arc(proj.x, proj.y, 26, 0, TWO_PI); ctx.stroke();
       ctx.fillStyle = 'rgba(25,227,106,0.95)';
       ctx.beginPath(); ctx.arc(proj.x, proj.y, 6, 0, TWO_PI); ctx.fill();
       ctx.font = '13px -apple-system, sans-serif';
       ctx.fillText('Quelle ±' + md.source.depthSigma.toFixed(1) + ' m', proj.x + 32, proj.y + 4);
+    } else {
+      // Richtungsvektor aus View-Matrix (Spalte 2 = Z-Achse der Kamera)
+      const p = md.source.point;
+      // Kamera-Koordinaten des Quellpunkts
+      const vm = md.viewMat;
+      const ex = vm[0] * p[0] + vm[4] * p[1] + vm[8]  * p[2] + vm[12];
+      const ey = vm[1] * p[0] + vm[5] * p[1] + vm[9]  * p[2] + vm[13];
+      const ez = vm[2] * p[0] + vm[6] * p[1] + vm[10] * p[2] + vm[14];
+      let dx = ex, dy = -ey;
+      if (ez >= 0) { dx = -dx; dy = -dy; } // hinter der Kamera
+      const ang = Math.atan2(dy, dx);
+      const cx = W / 2, cy = H / 2, rr = Math.min(W, H) * 0.38;
+      const ax = cx + Math.cos(ang) * rr, ay = cy + Math.sin(ang) * rr;
+      ctx.save();
+      ctx.translate(ax, ay); ctx.rotate(ang);
+      ctx.fillStyle = 'rgba(25,227,106,0.95)';
+      ctx.beginPath(); ctx.moveTo(20, 0); ctx.lineTo(-13, 11); ctx.lineTo(-13, -11); ctx.closePath(); ctx.fill();
+      ctx.restore();
     }
   }
 }
