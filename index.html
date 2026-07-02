@@ -86,7 +86,7 @@
          an seiner realen Position.</p>
       <button id="btn-start" type="button">Starten</button>
       <button id="btn-start-b" type="button" class="secondary">🔊 Lokalisierung (B)</button>
-      <button id="btn-start-c" type="button" class="secondary">🔦 Akustische Taschenlampe (C)</button>
+      <button id="btn-start-c" type="button" class="secondary">🔦 HF-Taschenlampe ≥ 12 kHz (C)</button>
       <button id="btn-start-d" type="button" class="secondary">🛰️ Virtuelles Array + Triangulation (D)</button>
       <p id="gate-error" class="err"></p>
     </div>
@@ -125,7 +125,7 @@
 
     <div id="c-hud">
       <label class="b-freq-inline">Ziel-f
-        <input id="c-freq" type="number" placeholder="2–6 kHz" min="50" max="12000" step="10" /> Hz
+        <input id="c-freq" type="number" placeholder="leer = 12–20 kHz" min="12000" max="20000" step="100" /> Hz
       </label>
       <label class="c-input-row">Eingang
         <select id="c-input"></select>
@@ -133,6 +133,7 @@
       <div class="row"><span>Mikrofon</span><b id="c-mic">–</b></div>
       <div class="row"><span>Kanäle</span><b id="c-ch">–</b></div>
       <div class="c-meter" aria-hidden="true"><div id="c-bar"></div></div>
+      <div class="row"><span>HF 12–20 kHz</span><b id="c-hf">–</b></div>
       <div class="row"><span>Score</span><b id="c-score">–</b></div>
       <div class="row"><span>Qualität</span><b id="c-quality">–</b></div>
       <div class="row"><span>Zentrum</span><b id="c-center">–</b></div>
@@ -146,7 +147,7 @@
       <button id="c-clear" type="button">Löschen</button>
       <button id="c-close" type="button">Schließen</button>
     </div>
-    <div id="c-hint">Optional Ziel-Frequenz setzen (z. B. 2000 Hz) für selektive Suche · langsam über die Szene schwenken · helle Bereiche = lautes Zielgeräusch</div>
+    <div id="c-hint">Hört nur 12–20 kHz · langsam über die Szene schwenken · türkiser Ring = Flanken der Quelle („Donut") · das dunkle Loch mit grünem Punkt = Zentrum</div>
   </div>
 
   <!-- Modus D: VIO-gestütztes virtuelles Array + Triangulation (WebXR DOM-Overlay-Root) -->
@@ -160,7 +161,8 @@
       </label>
       <div class="row"><span>Status</span><b id="md-status">–</b></div>
       <div class="row"><span>Budget</span><b id="md-budget">–</b></div>
-      <div class="row"><span>Kreise</span><b id="md-circles">0 / 3</b></div>
+      <div class="row"><span>Bewegung</span><b id="md-move">–</b></div>
+      <div class="row"><span>Segmente</span><b id="md-circles">0</b></div>
       <div class="row"><span>Basislinie</span><b id="md-baseline">–</b></div>
       <div class="row"><span>Entfernung</span><b id="md-dist">–</b></div>
       <div class="row"><span>Quelle rel.</span><b id="md-src">–</b></div>
@@ -171,12 +173,12 @@
     <p id="md-error" class="err"></p>
 
     <div id="md-controls">
-      <button id="md-capture" type="button">Kreis aufnehmen</button>
+      <button id="md-capture" type="button">Pause</button>
       <button id="md-3d" type="button">3D-Ansicht</button>
       <button id="md-reset" type="button">Zurücksetzen</button>
       <button id="md-close" type="button">Schließen</button>
     </div>
-    <div id="md-hint">Kreis (Ø ~0,5 m, ~2 s) · Standort mehrere Meter wechseln · 3 Kreise → Quellpunkt</div>
+    <div id="md-hint">Handy einfach frei bewegen – grüner Rand = gute Messdaten · zwischendurch den Standort wechseln · Segmente sammeln sich automatisch → Quellpunkt</div>
   </div>
 
   <script type="module" src="/src/main.js"></script>

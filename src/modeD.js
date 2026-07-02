@@ -2,12 +2,15 @@
  * SoundPointer – Modus D: VIO-gestütztes virtuelles Array + Triangulation
  * ------------------------------------------------------------------
  * Position der virtuellen Mikrofone kommt aus WebXR/ARCore-Pose (NICHT aus
- * Beschleunigungs-Integration). Pro geführtem Kreis (~2 s) entsteht aus
- * VIO-Positionen + kohärenten Phasen eine Richtungsschätzung (Beamforming via
- * lineare Kleinste-Quadrate auf die ebene-Wellen-Hypothese). Aus 2–4 Kreisen
- * von verschiedenen Standorten wird per Strahlenschnitt (Triangulation) ein
- * Quellpunkt + Unsicherheits-Ellipsoid geschätzt und als persistenter Marker
- * gehalten. AR-Overlay + frei drehbare 3D-Ansicht.
+ * Beschleunigungs-Integration). KEINE geführte Bewegung mehr: Der Nutzer
+ * bewegt das Handy einfach frei; ein Hintergrund-Algorithmus prüft laufend
+ * gleitende Zeitfenster und wählt SELBST die Abschnitte aus, deren Messwerte
+ * geeignet sind (genug Bewegungs-Apertur, Ton hörbar, ebene-Welle-Fit
+ * kohärent). Jeder akzeptierte Abschnitt liefert eine Richtungsschätzung
+ * (lineare Kleinste-Quadrate); mehrere Abschnitte von verschiedenen
+ * Standorten werden per Strahlenschnitt (Triangulation) zu einem Quellpunkt
+ * + Unsicherheits-Ellipsoid verrechnet. Ein GRÜNER Bildschirmrand meldet dem
+ * Nutzer live, dass seine aktuelle Bewegung gute Daten liefert.
  *
  * Android-only (Chrome, WebXR immersive-ar / ARCore).
  */
@@ -18,11 +21,12 @@ import { CoherentTone } from './coherent.js';
 
 const C_SOUND = 343;
 const TWO_PI = Math.PI * 2;
-const MEAS_MS = 2000;        // Dauer eines Kreises
-// Mittelbogen-Fenster relativ zur Messdauer (Anfang/Ende mit Beschleunigung weglassen)
-const MID_LO = MEAS_MS * 0.30, MID_HI = MEAS_MS * 0.84; // ms ab Kreisstart
+const FIT_WIN_MS = 1600;     // gleitendes Auswertefenster
+const FIT_EVERY_MS = 450;    // Prüftakt des Auswahl-Algorithmus
+const BUF_MS = 6000;         // Rohpuffer (Audio+Pose)
 const MIN_SAMPLES = 12;
-const TARGET_CIRCLES = 3;
+const SEG_MAX = 16;          // max. gehaltene Richtungs-Segmente
+const COH_MIN = 0.25;        // Mindest-Kohärenz eines akzeptierten Segments
 
 /* ---------- kleine Lineare Algebra ---------- */
 function solveLinear(A, b, n) { // Gauß mit Teilpivotisierung; A: n*n (row-major), b: n
@@ -102,11 +106,12 @@ const md = {
   posePos: null, viewMat: null, projMat: null,
   poseHistory: [],        // [{t, pos}] – Ringpuffer für Zeit-Alignment Audio↔Pose
   audioLatency: 150,      // ms – geschätzte Audio-Eingangslatenz (wird nach Start gesetzt)
-  phase: 'idle',          // 'idle' | 'countdown' | 'measuring'
-  countdownEnd: 0,
-  measEndT: 0, measStartT: 0,
-  cur: null,              // aktuelle Kreismessung: { samples:[{t,pos,phase,amp,snr}] }
-  circles: [],            // [{ center, dir, coh, sigTheta, deltaF, samples }]
+  scanning: true,         // kontinuierliche Auswertung aktiv (Pause-Button)
+  buf: [],                // Rohsamples [{t,pos,phase,amp,snr}] – gleitender Puffer
+  lastFitT: 0,
+  goodness: 0,            // 0..1 geglättet – "bewegt sich der Nutzer gut?"
+  moveTone: 0, moveSpan: 0, // Teilmetriken für HUD-Hinweise
+  segments: [],           // akzeptierte Abschnitte [{ t, center, dir, coh, sigTheta, deltaF, samples }]
   source: null,           // { point:[3], cov:[9], axes:[{dir,len}], depthSigma }
   tone: null,
   arCtx: null, inCtx: null,
@@ -174,15 +179,14 @@ function onXRFrame(t, frame) {
     md.poseHistory.push({ t: performance.now(), pos: md.posePos.slice() });
     if (md.poseHistory.length > 120) md.poseHistory.shift(); // ~2 s bei 60 fps
   }
-  // Mess-Timing
+  // Kontinuierlicher Auswahl-Algorithmus: prüft im Takt, ob das letzte
+  // Zeitfenster brauchbare Messwerte enthält, und übernimmt es dann selbst.
   const now = performance.now();
-  if (md.phase === 'countdown' && now >= md.countdownEnd) {
-    md.cur = { samples: [] };
-    md.phase = 'measuring';
-    md.measStartT = now;
-    md.measEndT = now + MEAS_MS;
+  if (md.scanning && now - md.lastFitT >= FIT_EVERY_MS) {
+    md.lastFitT = now;
+    tryFit(now);
   }
-  if (md.phase === 'measuring' && now >= md.measEndT) finishCircle();
+  md.goodness *= 0.995; // sanfter Verfall zwischen den Prüfungen
   drawAR();
   if (md.inspector) drawInspector();
   updateHud();
@@ -205,20 +209,21 @@ function interpolatePose(tAudio) {
   return [a[0] + f * (b[0] - a[0]), a[1] + f * (b[1] - a[1]), a[2] + f * (b[2] - a[2])];
 }
 
-/* ---------- Audio-Sample-Erfassung ---------- */
+/* ---------- Audio-Sample-Erfassung (läuft ständig) ---------- */
 function onAudioWindow(wnd) {
-  if (md.phase !== 'measuring' || !md.cur) return;
+  if (!md.session || !md.scanning) return;
   // Audio-Aufnahmezeit = Callback-Zeit minus geschätzte Eingangslatenz
   const tAudio = wnd.t - md.audioLatency;
   const pos = interpolatePose(tAudio);
   if (!pos) return;
-  md.cur.samples.push({ t: wnd.t, pos: pos.slice(), phase: wnd.phase, amp: wnd.amp, snr: wnd.snr });
+  md.buf.push({ t: wnd.t, pos: pos.slice(), phase: wnd.phase, amp: wnd.amp, snr: wnd.snr });
+  const cutoff = wnd.t - BUF_MS;
+  while (md.buf.length && md.buf[0].t < cutoff) md.buf.shift();
 }
 
-/* ---------- Pro Kreis: Richtungsschätzung ---------- */
+/* ---------- Pro Zeitfenster: Richtungsschätzung ---------- */
 function fitDirection(samplesAll) {
-  const t0 = md.measStartT;
-  const s = samplesAll.filter((x) => (x.t - t0) >= MID_LO && (x.t - t0) <= MID_HI);
+  const s = samplesAll.slice();
   if (s.length < MIN_SAMPLES) return null;
   s.sort((a, b) => a.t - b.t);
   // Phase entlang des Pfads entfalten (Nachbarn << λ/2)
@@ -275,7 +280,7 @@ function fitDirection(samplesAll) {
 
 /* ---------- Triangulation ---------- */
 function triangulate() {
-  const cs = md.circles.filter((c) => c && c.dir && c.coh > 0.1);
+  const cs = md.segments.filter((c) => c && c.dir && c.coh > 0.1);
   if (cs.length < 2) { md.source = null; return; }
   const M = new Array(9).fill(0), b = [0, 0, 0];
   for (const c of cs) {
@@ -306,24 +311,77 @@ function triangulate() {
   md.source = { point: x, cov, axes, depthSigma };
 }
 
-/* ---------- Messablauf ---------- */
-function startCircle() {
-  if (!md.session) return;
-  md.phase = 'countdown';
-  md.countdownEnd = performance.now() + 3000; // 3-Sek-Vorlauf
-  md.cur = null;
+/* ---------- Kontinuierlicher Auswahl-Algorithmus ---------- */
+// Prüft das letzte Zeitfenster: Ton hörbar? Genug Bewegungs-Apertur? Fit
+// kohärent? Nur dann wird der Abschnitt als Segment übernommen. Nebenbei
+// entsteht die Bewegungs-Güte (0..1) für das grüne Live-Feedback.
+function tryFit(now) {
+  const s = md.buf.filter((x) => x.t >= now - FIT_WIN_MS);
+  const lambda = C_SOUND / md.freq;
+
+  // Teilmetrik 1: Ton vorhanden (Median-SNR des Lock-in)
+  let tone = 0;
+  if (s.length >= 4) {
+    const snrs = s.map((x) => x.snr).sort((a, b) => a - b);
+    const med = snrs[snrs.length >> 1];
+    tone = Math.max(0, Math.min(1, (med - 0.2) / 0.5));
+  }
+  // Teilmetrik 2: Bewegungs-Apertur im Fenster (Durchmesser um den Schwerpunkt)
+  let span = 0;
+  if (s.length >= 4) {
+    const c = [0, 0, 0];
+    for (const x of s) { c[0] += x.pos[0]; c[1] += x.pos[1]; c[2] += x.pos[2]; }
+    c[0] /= s.length; c[1] /= s.length; c[2] /= s.length;
+    for (const x of s) { const d = Math.hypot(x.pos[0] - c[0], x.pos[1] - c[1], x.pos[2] - c[2]); if (d > span) span = d; }
+    span *= 2;
+  }
+  const move = Math.max(0, Math.min(1, span / (0.5 * lambda)));
+  md.moveTone = tone; md.moveSpan = span;
+
+  // Fit nur versuchen, wenn die Vorprüfung überhaupt Chancen sieht.
+  let fit = null;
+  if (s.length >= MIN_SAMPLES && tone > 0.15 && span >= 0.25 * lambda) {
+    fit = fitDirection(s);
+    if (fit && fit.coh >= COH_MIN) acceptSegment(now, fit, s);
+    else fit = null;
+  }
+
+  // Bewegungs-Güte fürs grüne Feedback: Ton × Bewegung × Fit-Qualität.
+  const target = tone * move * (fit ? (0.35 + 0.65 * fit.coh) : 0.35);
+  md.goodness += (target - md.goodness) * 0.35;
 }
-function finishCircle() {
-  md.phase = 'idle';
-  const fit = md.cur ? fitDirection(md.cur.samples) : null;
-  if (fit) {
-    fit.samples = md.cur.samples; md.circles.push(fit); triangulate();
-    const dfStr = Math.abs(fit.deltaF) < 5 ? (fit.deltaF > 0 ? '+' : '') + fit.deltaF.toFixed(2) + ' Hz Drift' : '⚠ Δf=' + fit.deltaF.toFixed(1) + ' Hz';
-    setStatus('Kreis ' + md.circles.length + ' ok · ' + dfStr + ' · Standort wechseln');
-  } else setStatus('Kreis verworfen (instabiles Signal oder |k|-Plausibilität) – wiederholen');
-  md.cur = null;
+
+// Segment übernehmen; sehr ähnliche, kurz aufeinanderfolgende Segmente werden
+// zusammengelegt (bestes behalten), damit Stillstand die Liste nicht flutet.
+function acceptSegment(now, fit, samples) {
+  fit.t = now;
+  fit.samples = samples.filter((_, i) => (i & 1) === 0); // fürs 3D dezimieren
+  const last = md.segments[md.segments.length - 1];
+  if (last && now - last.t < 2200) {
+    const dc = Math.hypot(fit.center[0] - last.center[0], fit.center[1] - last.center[1], fit.center[2] - last.center[2]);
+    const dot = fit.dir[0] * last.dir[0] + fit.dir[1] * last.dir[1] + fit.dir[2] * last.dir[2];
+    if (dc < 0.15 && dot > 0.975) { // gleicher Standort, gleiche Richtung
+      if (fit.coh > last.coh) md.segments[md.segments.length - 1] = fit;
+      triangulate();
+      return;
+    }
+  }
+  md.segments.push(fit);
+  while (md.segments.length > SEG_MAX) md.segments.shift();
+  triangulate();
+  setStatus('Segment ' + md.segments.length + ' ✓ · gern auch Standort wechseln');
 }
-function resetD() { md.circles = []; md.source = null; md.cur = null; md.phase = 'idle'; md.countdownEnd = 0; md.poseHistory = []; setStatus('zurückgesetzt'); }
+
+function togglePause() {
+  md.scanning = !md.scanning;
+  if (!md.scanning) { md.goodness = 0; md.buf = []; }
+  const btn = document.getElementById('md-capture');
+  btn.textContent = md.scanning ? 'Pause' : 'Weiter';
+  btn.classList.toggle('armed', !md.scanning);
+  setStatus(md.scanning ? 'Suche läuft – einfach frei bewegen' : 'pausiert');
+}
+
+function resetD() { md.segments = []; md.source = null; md.buf = []; md.goodness = 0; md.poseHistory = []; setStatus('zurückgesetzt'); }
 
 let statusUntil = 0, statusMsg = '';
 function setStatus(m) { statusMsg = m; statusUntil = performance.now() + 4000; }
@@ -344,27 +402,16 @@ function drawAR() {
   if (cv.width !== W * dpr || cv.height !== H * dpr) { cv.width = W * dpr; cv.height = H * dpr; }
   const ctx = md.arCtx; ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, W, H);
 
-  // Vorbereitungs-Countdown (3-2-1)
-  if (md.phase === 'countdown') {
-    const remain = Math.ceil((md.countdownEnd - performance.now()) / 1000);
-    ctx.fillStyle = 'rgba(0,0,0,0.45)'; ctx.fillRect(W / 2 - 90, H / 2 - 80, 180, 130);
-    ctx.fillStyle = 'rgba(255,180,80,0.97)'; ctx.font = '700 96px -apple-system, sans-serif'; ctx.textAlign = 'center';
-    ctx.fillText(remain, W / 2, H / 2 + 30);
-    ctx.font = '16px -apple-system, sans-serif';
-    ctx.fillStyle = 'rgba(255,255,255,0.9)';
-    ctx.fillText('Kreis vorbereiten …', W / 2, H / 2 + 70);
-    ctx.textAlign = 'start';
-  }
-  // Guidance-Kreis + Countdown während der Messung
-  if (md.phase === 'measuring') {
-    const remain = (md.measEndT - performance.now()) / 1000;
-    ctx.strokeStyle = 'rgba(54,198,255,0.8)'; ctx.lineWidth = 3;
-    ctx.beginPath(); ctx.arc(W / 2, H / 2, Math.min(W, H) * 0.28, 0, TWO_PI); ctx.stroke();
-    ctx.fillStyle = 'rgba(54,198,255,0.95)'; ctx.font = '700 64px -apple-system, sans-serif'; ctx.textAlign = 'center';
-    ctx.fillText(Math.ceil(remain), W / 2, H / 2 + 20);
-    ctx.font = '15px -apple-system, sans-serif';
-    ctx.fillText('im Kreis bewegen (Ø ~0,5 m)', W / 2, H / 2 + 60);
-    ctx.textAlign = 'start';
+  // Grünes Bewegungs-Feedback: leuchtender Rand-Schleier, je besser die
+  // aktuelle Bewegung Messwerte liefert, desto kräftiger. Bildmitte bleibt frei.
+  if (md.scanning && md.goodness > 0.04) {
+    const cx = W / 2, cy = H / 2, R = Math.hypot(cx, cy);
+    const a = Math.min(0.32, 0.36 * md.goodness);
+    const g = ctx.createRadialGradient(cx, cy, R * 0.5, cx, cy, R);
+    g.addColorStop(0, 'rgba(25,227,106,0)');
+    g.addColorStop(1, `rgba(25,227,106,${a})`);
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, W, H);
   }
   // Quellpunkt – im Bild: grüner Marker; außerhalb: Randpfeil
   if (md.source && md.viewMat && md.projMat) {
@@ -424,8 +471,8 @@ function drawInspector() {
 
   // Punktwolke einsammeln
   const pts = [];
-  for (const c of md.circles) for (const s of c.samples) pts.push(s.pos);
-  for (const c of md.circles) pts.push(c.center);
+  for (const c of md.segments) for (const s of c.samples) pts.push(s.pos);
+  for (const c of md.segments) pts.push(c.center);
   if (md.source) pts.push(md.source.point);
   if (md.posePos) pts.push(md.posePos);
   if (!pts.length) return;
@@ -436,9 +483,9 @@ function drawInspector() {
   const scale = (0.4 * Math.min(W, H) / ext) * md.orbit.zoom;
   const pr = (p) => { const r = rot(sub(p, ctr), md.orbit.yaw, md.orbit.pitch); return [W / 2 + scale * r[0], H / 2 - scale * r[1]]; };
 
-  // Kreis-Pfade
+  // Segment-Pfade
   ctx.lineWidth = 2;
-  for (const c of md.circles) {
+  for (const c of md.segments) {
     ctx.strokeStyle = 'rgba(54,198,255,0.7)'; ctx.beginPath();
     c.samples.forEach((s, i) => { const q = pr(s.pos); if (i === 0) ctx.moveTo(q[0], q[1]); else ctx.lineTo(q[0], q[1]); });
     ctx.stroke();
@@ -484,16 +531,25 @@ function updateHud() {
   const lambda = C_SOUND / md.freq, budget = lambda / 8, vioErr = 0.03;
   const amp = vioErr <= budget * 0.7 ? '🟢' : vioErr <= budget ? '🟡' : '🔴';
   set('md-budget', `${amp} λ/8=${(budget * 100).toFixed(1)}cm · VIO~${(vioErr * 100).toFixed(0)}cm · Lat ${md.audioLatency.toFixed(0)}ms`);
-  set('md-circles', md.circles.length + ' / ' + TARGET_CIRCLES);
-  // Basislinie zwischen Kreiszentren
+  set('md-circles', String(md.segments.length));
+  // Bewegungs-Güte + konkreter Hinweis, was gerade fehlt
+  const gPct = (md.goodness * 100).toFixed(0) + ' %';
+  let gHint = '';
+  if (md.scanning) {
+    if (md.moveTone < 0.2) gHint = ' · Zielton fehlt';
+    else if (md.moveSpan < 0.25 * (C_SOUND / md.freq)) gHint = ' · mehr bewegen';
+    else if (md.goodness > 0.5) gHint = ' · gut ✓';
+  }
+  set('md-move', md.scanning ? gPct + gHint : 'pausiert');
+  // Basislinie zwischen Segment-Zentren
   let baseline = 0;
-  for (let i = 0; i < md.circles.length; i++) for (let j = i + 1; j < md.circles.length; j++) baseline = Math.max(baseline, dist(md.circles[i].center, md.circles[j].center));
+  for (let i = 0; i < md.segments.length; i++) for (let j = i + 1; j < md.segments.length; j++) baseline = Math.max(baseline, dist(md.segments[i].center, md.segments[j].center));
   set('md-baseline', baseline.toFixed(2) + ' m');
   if (md.source) {
-    let r = 0, c = 0; for (const cc of md.circles) { r += dist(md.source.point, cc.center); c++; }
+    let r = 0, c = 0; for (const cc of md.segments) { r += dist(md.source.point, cc.center); c++; }
     r = c ? r / c : 0;
     set('md-dist', r.toFixed(1) + ' m · Tiefe ±' + md.source.depthSigma.toFixed(1) + ' m');
-    const cohAvg = md.circles.reduce((a, x) => a + x.coh, 0) / md.circles.length;
+    const cohAvg = md.segments.reduce((a, x) => a + x.coh, 0) / md.segments.length;
     set('md-coh', (cohAvg * 100).toFixed(0) + ' %');
     // Lage des Quellpunkts relativ zur aktuellen Blickrichtung (Diagnose)
     const e = eyeCoords(md.source.point);
@@ -509,10 +565,10 @@ function updateHud() {
   } else { set('md-dist', '–'); set('md-coh', '–'); set('md-src', '–'); }
   // Konditionierungs-Warnung
   const warn = [];
-  if (md.source) { let r = 0, c = 0; for (const cc of md.circles) { r += dist(md.source.point, cc.center); c++; } r = c ? r / c : 0; if (baseline < 0.4 * r) warn.push('Basislinie zu klein – weiter versetzt messen'); }
-  if (md.circles.length < 2) warn.push('≥ 2 Kreise nötig für einen Punkt');
+  if (md.source) { let r = 0, c = 0; for (const cc of md.segments) { r += dist(md.source.point, cc.center); c++; } r = c ? r / c : 0; if (baseline < 0.4 * r) warn.push('Basislinie zu klein – auch den Standort wechseln'); }
+  if (md.segments.length < 2) warn.push('≥ 2 Segmente nötig für einen Punkt – frei bewegen');
   set('md-warn', warn.join(' · '));
-  const statusIdle = md.phase === 'countdown' ? 'Vorbereitung …' : md.phase === 'measuring' ? 'Messung läuft …' : 'bereit – „Kreis aufnehmen"';
+  const statusIdle = md.scanning ? 'Suche läuft – frei bewegen' : 'pausiert';
   set('md-status', now < statusUntil ? statusMsg : statusIdle);
 }
 
@@ -540,7 +596,7 @@ export function initModeD() {
     if (!ok) { startBtn.disabled = true; startBtn.textContent = '🛰️ Modus D (WebXR-AR nicht verfügbar)'; }
   });
   startBtn.addEventListener('click', startModeD);
-  document.getElementById('md-capture').addEventListener('click', () => { if (md.phase === 'idle') startCircle(); });
+  document.getElementById('md-capture').addEventListener('click', togglePause);
   document.getElementById('md-reset').addEventListener('click', resetD);
   document.getElementById('md-close').addEventListener('click', () => { if (md.session) md.session.end(); });
   const insBtn = document.getElementById('md-3d');
@@ -573,7 +629,10 @@ async function startModeD() {
     md.audioLatency = md.tone.getLatencyMs();
     await startSession();                 // WebXR/ARCore
     resetD();
-    setStatus('Session aktiv – Kreis 1 aufnehmen');
+    md.scanning = true;
+    const capBtn = document.getElementById('md-capture');
+    capBtn.textContent = 'Pause'; capBtn.classList.remove('armed');
+    setStatus('Suche läuft – Handy einfach frei bewegen (grün = gute Daten)');
   } catch (e) {
     console.error(e);
     if (md.tone) { md.tone.stop(); md.tone = null; }

@@ -4,6 +4,21 @@ Eine PWA, die langfristig Geräuschquellen im Raum lokalisieren und als
 frequenzselektive akustische Heatmap darstellen soll. Bevor Audio verarbeitet
 wird, muss die räumliche Orientierung zuverlässig funktionieren.
 
+## Aktuelle Betriebsmodi (Kurzüberblick)
+
+- **Modus C – HF-Taschenlampe (≥ 12 kHz):** Gerichtetes USB-Mikrofon (z. B.
+  RØDE VideoMic Me-C) hört ausschließlich das Band **12–20 kHz** – dort ist
+  die Richtwirkung am stärksten und Umgebungslärm am leisesten. Neben der
+  verblassenden Pegel-Heatmap wird die **räumliche Ableitung** des Pegels
+  beim Schwenken als türkiser Ring („**Donut**") gezeichnet: Die Flanken um
+  die Quelle leuchten, das dunkle Loch mit grünem Punkt ist das Zentrum.
+- **Modus D – Virtuelles Array (frei bewegen):** WebXR/ARCore-Pose + kohärente
+  Phase. Keine geführten Kreise mehr – der Nutzer bewegt das Handy einfach
+  frei; ein Auswahl-Algorithmus prüft gleitende Zeitfenster und übernimmt
+  selbstständig die brauchbaren Abschnitte (Segmente). Ein **grüner
+  Bildschirmrand** zeigt live, dass die aktuelle Bewegung gute Messdaten
+  liefert. Segmente von verschiedenen Standorten triangulieren den Quellpunkt.
+
 ## Milestone 1 – Sensorstabile AR-Markierung
 
 Validiert, ob eine PWA auf dem Smartphone eine **stabile Richtungsreferenz** im

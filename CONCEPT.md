@@ -23,7 +23,8 @@ Wir halten **drei Denkrichtungen** bewusst getrennt:
 |---|---|---|---|
 | **A** | Sensorstabile AR-Markierung | Reine Orientierung; Punkt als Raumrichtung auf virtueller Kugel. Plus experimentelles 6DoF (IMU-Position). | Stabil, dient als **Sensor-/Qualitätslabor** |
 | **B** | Virtuelles Mikrofon-Array | Ein bewegtes Handy-Mikro erzeugt über die Zeit ein „virtuelles Array"; aus Phasendifferenzen → Richtung. | **Funktioniert nicht zuverlässig** (siehe §6) |
-| **C** | Akustische Taschenlampe | Gerichtetes (USB-)Mikro misst Zielpegel; Blickrichtung gewichtet → verblassende Heatmap + akustisches Zentrum. | **Aktueller MVP-Fokus** |
+| **C** | Akustische HF-Taschenlampe | Gerichtetes (USB-)Mikro hört NUR 12–20 kHz; Blickrichtung gewichtet → Ableitungs-Ring („Donut") + verblassende Heatmap + Zentrum. | **Aktueller MVP-Fokus** |
+| **D** | Virtuelles Array (VIO, frei bewegen) | WebXR/ARCore-Pose + kohärente Phase; Auswahl-Algorithmus übernimmt selbst brauchbare Bewegungsabschnitte; grüner Rand = gutes Bewegungs-Feedback; Triangulation. | In Erprobung |
 
 ---
 
@@ -95,12 +96,16 @@ Trotz `autoGainControl:false` etc. kann Android intern regeln (**AGC-Verdacht** 
 
 ---
 
-## 7. Modus C – Akustische Taschenlampe (aktueller MVP)
+## 7. Modus C – Akustische HF-Taschenlampe (aktueller MVP)
 
 **Idee:** Das **schwierige Positionsproblem umgehen.** Ein **gerichtetes externes Mikrofon** (RØDE VideoMic Me-C+ per USB-C am S24) liefert die räumliche Trennschärfe physikalisch; die App nutzt **nur die Orientierung** (driftfrei).
 
+**Hörband seit Juli 2026 fest ≥ 12 kHz (12–20 kHz):** Kurze Wellenlängen werden vom Mikrofongehäuse abgeschattet → die Richtwirkung einer kleinen Niere ist im HF-Band am größten, und breitbandiger Industrielärm ist dort meist leise. Unterhalb 12 kHz ist der Modus bewusst taub.
+
+**Donut-Darstellung (Ableitung statt Hotspot):** Zusätzlich zur Pegel-Heatmap wird die **räumliche Ableitung** |dScore/dWinkel| zwischen aufeinanderfolgenden Blickrichtungen gezeichnet (türkis, verblassend). Der Gradient ist auf den **Flanken** um die Quelle maximal und im Maximum null → im Bild entsteht ein **Ring („Donut")** um die Quelle; das dunkle Loch (grüner Punkt = gewichtetes Zentrum) ist die gesuchte Richtung. Die Normierung des Gradienten ist adaptiv (verfallendes Maximum), bei reinem Rauschen entsteht kein Geister-Ring.
+
 **Funktionsweise:**
-- Pro Fenster: **Score 0..1** des Zielgeräuschs. **Optionale Zielfrequenz** → schmalbandig als **absolute Ton-Prominenz in dB** (Zielband vs. Nachbar-Rauschband). Ohne Frequenz: Breitband 2–6 kHz.
+- Pro Fenster: **Score 0..1** des Zielgeräuschs. **Optionale Zielfrequenz (≥ 12 kHz)** → schmalbandig als **absolute Ton-Prominenz in dB** (Zielband vs. HF-Nachbarband). Ohne Frequenz: HF-Bandpegel 12–20 kHz über einem **adaptiv mitlaufenden Rauschteppich** (Minimum-Tracker).
 - **Sample** = `{ t, direction = Blickrichtung, score, quality }`. Alte Samples **verblassen** (Fade-Tau ~4,5 s).
 - **Akustisches Zentrum** = `normalize(Σ richtung · score · quality · fade)`.
 - **Rendering:** verblassende **Heatmap** (weiche Glüh-Kreise, raumstabil über Orientierung) + grünes **Zentrum** bzw. **Randpfeil** außerhalb des Bildes.

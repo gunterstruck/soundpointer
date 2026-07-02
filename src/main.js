@@ -1150,23 +1150,31 @@ function stopModeB() {
 }
 
 /* ============================================================= *
- *  Mode C: Akustische Taschenlampe
+ *  Mode C: Akustische HF-Taschenlampe (12–20 kHz)
  * ============================================================= *
- *  Gerichtetes (USB-)Mikrofon misst den Zielpegel; die aktuelle
+ *  Gerichtetes (USB-)Mikrofon misst NUR das Hochfrequenz-Band; die aktuelle
  *  Blickrichtung (Orientierung, KEINE Position) gewichtet die Richtung.
- *  Verblassende Heatmap + akustisches Zentrum = Suchrichtung.
+ *  Neben der verblassenden Pegel-Heatmap wird die RÄUMLICHE ABLEITUNG des
+ *  Pegels beim Schwenken gezeichnet: Der Gradient ist auf den Flanken um die
+ *  Quelle maximal und im Maximum selbst null -> im Bild entsteht ein
+ *  verblassender RING ("Donut") um die Quelle, das Loch ist das Zentrum.
  */
 let meterC = null;
 let modeCRaf = 0;
 let cCtx = null;
 let cDotSprite = null;
+let cEdgeSprite = null;
 
 const mc = {
   active: false,
   frozen: false,
   samples: [],        // { t, direction:[x,y,z], score, quality, levelDb }
+  edges: [],          // { t, direction:[x,y,z], mag }  – |dScore/dWinkel|, normiert
+  prevProbe: null,    // letzte Sonde { direction, score, t } für die Ableitung
+  edgeMax: 0.02,      // adaptives Maximum der Steigung (Score pro Grad)
   fadeTauMs: 4500,
   maxSamples: 600,
+  maxEdges: 500,
   minQuality: 0.15,
   centerVec: null,
   centerQ01: 0,       // 0..1
@@ -1186,6 +1194,20 @@ function cGetDot() {
   g.addColorStop(1, 'rgba(255,110,40,0)');
   cx.fillStyle = g; cx.fillRect(0, 0, s, s);
   cDotSprite = c; return c;
+}
+
+// Türkiser Glühpunkt für die Ableitung (Donut-Flanken).
+function cGetEdgeDot() {
+  if (cEdgeSprite) return cEdgeSprite;
+  const s = 64;
+  const c = document.createElement('canvas'); c.width = s; c.height = s;
+  const cx = c.getContext('2d');
+  const g = cx.createRadialGradient(s / 2, s / 2, 0, s / 2, s / 2, s / 2);
+  g.addColorStop(0, 'rgba(80,235,255,0.95)');
+  g.addColorStop(0.5, 'rgba(40,190,230,0.45)');
+  g.addColorStop(1, 'rgba(40,190,230,0)');
+  cx.fillStyle = g; cx.fillRect(0, 0, s, s);
+  cEdgeSprite = c; return c;
 }
 
 function cMicDirection() {
@@ -1251,12 +1273,47 @@ async function startModeC() {
   }
 }
 
-function cClear() { mc.samples = []; mc.centerVec = null; mc.centerQ01 = 0; }
+function cClear() {
+  mc.samples = []; mc.edges = []; mc.prevProbe = null; mc.edgeMax = 0.02;
+  mc.centerVec = null; mc.centerQ01 = 0;
+}
 
 function cSample(now, lv) {
-  // Nur sammeln, wenn ein Ton wirklich heraussticht (kein Hotspot aus Rauschen).
+  const dir = cMicDirection();
+
+  // --- Ableitung (Donut): |dScore/dWinkel| zwischen zwei Sonden beim Schwenken.
+  // Auch Samples mit Score ~0 zählen hier – die Flanke "laut -> leise" gehört dazu.
+  if (lv.quality >= mc.minQuality) {
+    const prev = mc.prevProbe;
+    if (prev) {
+      const dot = Math.max(-1, Math.min(1, dir[0] * prev.direction[0] + dir[1] * prev.direction[1] + dir[2] * prev.direction[2]));
+      const angDeg = Math.acos(dot) * RAD;
+      // Nur bei echter Schwenkbewegung auswerten (zu langsam = Rauschen, zu schnell = unteraufgelöst).
+      if (angDeg >= 0.6 && angDeg <= 20) {
+        const slope = Math.abs(lv.score - prev.score) / angDeg; // Score pro Grad
+        // Adaptives Maximum: langsam verfallen lassen, damit "größte Veränderung" hell bleibt.
+        const dtS = (now - prev.t) / 1000;
+        mc.edgeMax = Math.max(0.02, mc.edgeMax * Math.exp(-dtS / 10), slope);
+        const mag = slope / mc.edgeMax; // 0..1
+        if (mag > 0.12) {
+          const mid = normalize3([dir[0] + prev.direction[0], dir[1] + prev.direction[1], dir[2] + prev.direction[2]]);
+          mc.edges.push({ t: now, direction: mid, mag });
+        }
+        mc.prevProbe = { direction: dir, score: lv.score, t: now };
+      } else if (angDeg > 20) {
+        mc.prevProbe = { direction: dir, score: lv.score, t: now }; // Sprung: neu aufsetzen
+      }
+      // bei < 0.6°: Sonde stehen lassen, bis genug Bewegung zusammenkommt
+    } else {
+      mc.prevProbe = { direction: dir, score: lv.score, t: now };
+    }
+    const eCut = now - mc.fadeTauMs * 3;
+    while (mc.edges.length && (mc.edges[0].t < eCut || mc.edges.length > mc.maxEdges)) mc.edges.shift();
+  }
+
+  // --- Pegel-Heatmap: nur sammeln, wenn ein Signal wirklich heraussticht.
   if (lv.quality < mc.minQuality || lv.score < 0.08) return;
-  mc.samples.push({ t: now, direction: cMicDirection(), score: lv.score, quality: lv.quality, levelDb: lv.levelDb });
+  mc.samples.push({ t: now, direction: dir, score: lv.score, quality: lv.quality, levelDb: lv.levelDb });
   // Alte/überzählige Samples entfernen.
   const cutoff = now - mc.fadeTauMs * 3;
   while (mc.samples.length && (mc.samples[0].t < cutoff || mc.samples.length > mc.maxSamples)) mc.samples.shift();
@@ -1284,6 +1341,7 @@ function cRender(now) {
 
   const invQ = Quat.conjugate(state.quat);
   // Heatmap-Blobs mit ABSOLUTEM Gewicht (kein relatives Maximum -> bei Stille nichts).
+  // Bewusst gedimmt: Die Hauptinformation ist der türkise Ableitungs-Ring.
   const dot = cGetDot();
   const r = Math.max(26, W * 0.08);
   cCtx.globalCompositeOperation = 'lighter';
@@ -1295,8 +1353,24 @@ function cRender(now) {
     if (cam[2] >= -0.02) continue;
     const proj = cameraRayToScreen(cam);
     if (!proj) continue;
-    cCtx.globalAlpha = Math.min(0.6, 0.12 + 0.7 * w);
+    cCtx.globalAlpha = Math.min(0.4, 0.08 + 0.45 * w);
     cCtx.drawImage(dot, proj.px - r, proj.py - r, 2 * r, 2 * r);
+  }
+  // Ableitungs-Ring ("Donut"): hell dort, wo sich der Pegel beim Schwenken am
+  // stärksten ändert – also auf den Flanken RUND um die Quelle. Im Zentrum
+  // (Maximum) ist die Ableitung ~0 -> dunkles Loch = gesuchte Richtung.
+  const edot = cGetEdgeDot();
+  const er = Math.max(20, W * 0.055);
+  for (let i = 0; i < mc.edges.length; i++) {
+    const e = mc.edges[i];
+    const w = e.mag * Math.exp(-(now - e.t) / mc.fadeTauMs);
+    if (w < 0.06) continue;
+    const cam = Quat.rotateVec(invQ, e.direction);
+    if (cam[2] >= -0.02) continue;
+    const proj = cameraRayToScreen(cam);
+    if (!proj) continue;
+    cCtx.globalAlpha = Math.min(0.85, 0.10 + 0.9 * w);
+    cCtx.drawImage(edot, proj.px - er, proj.py - er, 2 * er, 2 * er);
   }
   cCtx.globalAlpha = 1;
   cCtx.globalCompositeOperation = 'source-over';
@@ -1342,7 +1416,12 @@ function modeCLoop() {
     // HUD
     document.getElementById('c-bar').style.width = (lv.score * 100).toFixed(0) + '%';
     document.getElementById('c-score').textContent =
-      lv.score.toFixed(2) + (lv.targetFreq > 0 ? ' · ' + lv.promDb.toFixed(0) + ' dB' : '');
+      lv.score.toFixed(2) + ' · ' + lv.promDb.toFixed(0) + ' dB';
+    const hfEl = document.getElementById('c-hf');
+    if (hfEl) {
+      hfEl.textContent = lv.hfDb > -119 ? lv.hfDb.toFixed(0) + ' dB'
+        + (lv.targetFreq > 0 ? '' : (lv.floorDb != null ? ' (Teppich ' + lv.floorDb.toFixed(0) + ')' : '')) : '–';
+    }
     document.getElementById('c-quality').textContent = (lv.quality * 100).toFixed(0) + ' %';
     const ext = LevelMeter.isExternal(lv.label);
     const micEl = document.getElementById('c-mic');
@@ -1355,6 +1434,7 @@ function modeCLoop() {
     if (lv.clip) warn.push('Übersteuert!');
     if (lv.agc) warn.push('Pegel evtl. automatisch geregelt');
     if (lv.targetFreq > 0 && lv.promDb < 4) warn.push('kein Zielton erkannt');
+    if (lv.targetFreq === 0 && lv.score < 0.05) warn.push('kein HF-Signal über Rauschteppich');
     document.getElementById('c-warn').textContent = warn.join(' · ');
   }
   cRender(now);
